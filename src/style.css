@@ -86,6 +86,13 @@ html, body {
   transform: translateY(6px);
 }
 .trick.pop { animation: pop .85s ease-out; }
+/* graded snaps, following the .callout tone-class pattern above */
+.trick.snapfull { color: #ffd166; text-shadow: 0 2px 0 #06121d, 0 0 14px rgba(255, 209, 102, .45); }
+.trick.snapgood { color: var(--pk); }
+.trick.snapok   { color: var(--ink); }
+.trick.blown    { color: var(--warn); }
+.trick.pump     { color: #9fd0ff; }
+.trick.brake    { color: var(--dim); }
 @keyframes pop {
   0%   { opacity: 0; transform: translateY(14px) scale(.9); }
   15%  { opacity: 1; transform: translateY(0) scale(1); }

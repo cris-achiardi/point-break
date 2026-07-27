@@ -105,7 +105,11 @@ export class Audio {
 
     set(this.hiss.g.gain, Math.min(0.30, Math.abs(surfer.turnRate) * 0.16 * Math.min(1, spd / 9)
       + spd * 0.0055));
-    set(this.hiss.f.frequency, 1500 + spd * 130 + Math.abs(surfer.turnRate) * 900);
+    // Ceiling matters now that a snap drives turnRate to ~10 rad/s: unclamped that lands at
+    // 10 kHz, and the source is heavily integrated brown noise with almost no energy up
+    // there — so the rail would go THIN and vanish at the exact moment it should tear.
+    set(this.hiss.f.frequency,
+      Math.min(5200, 1500 + spd * 130 + Math.abs(surfer.turnRate) * 900));
 
     set(this.roar.g.gain, (0.05 + pw * 0.20 + tube * 0.35) * (1 - foam * 0.3));
     set(this.roar.f.frequency, tube ? 260 : 640 + pw * 340);

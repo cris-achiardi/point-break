@@ -65,6 +65,9 @@ function build() {
 function start(newSeed) {
   seed = newSeed;
   build();
+  // drop anything armed while the results card was up, so a restart does not open with a
+  // phantom snap from whatever you were mashing when the last ride ended
+  for (const a of ['tail', 'up', 'down']) input.takeDouble(a);
   audio.start();
   hud.hideOverlay();
   hud.show(true);
@@ -102,6 +105,7 @@ function frame(now) {
 
   /* physics at a fixed step so hard turns stay stable */
   acc = Math.min(acc + dt, 0.1);
+  const wasSnapping = surfer.snapT > 0;
   while (acc >= FIXED) {
     surfer.update(FIXED, inp);
     acc -= FIXED;
@@ -114,6 +118,12 @@ function frame(now) {
   /* --- events --------------------------------------------------------- */
   for (const ev of surfer.events) {
     if (ev.kind === 'tube') audio.blip(880, 0.3, 0.2);
+    else if (ev.kind === 'snapfull') audio.blip(1040, 0.26, 0.22);
+    else if (ev.kind === 'snapgood') audio.blip(860, 0.20, 0.18);
+    else if (ev.kind === 'snapok') audio.blip(700, 0.16, 0.15);
+    else if (ev.kind === 'blown') audio.hit(150, 0.55, 0.45, 0.7);
+    else if (ev.kind === 'pump') audio.blip(430, 0.13, 0.10);
+    else if (ev.kind === 'brake') audio.hit(320, 0.30, 0.30, 1.6);
     else audio.blip(ev.kind === 'snap' ? 720 : 520, 0.14, 0.13);
   }
 
@@ -136,6 +146,19 @@ function frame(now) {
   if (surfer.alive) {
     if (Math.abs(surfer.turnRate) > 0.42 && surfer.spd > 6) {
       spray.rail(sf, surfer.psi, surfer.turnRate, surfer.spd, 1);
+    }
+    /*
+     * The tail letting go throws a sheet. spray.rail early-outs when its own `bite` term
+     * hits zero, which happens at low speed and at the instant turnRate crosses zero — so
+     * feed it the LATCHED snap direction and a floor speed instead of the live values, the
+     * same synthetic-input trick the wipeout branch below uses.
+     */
+    if (surfer.snapT > 0) {
+      spray.rail(sf, surfer.psi, surfer.snapDir * 2.0, Math.max(surfer.spd, 9),
+        2 + Math.round(3 * surfer.snapQ));
+    }
+    if (surfer.snapT > 0 && !wasSnapping) {      // rising edge: one burst off the lip
+      spray.lip(sf.px, sf.py + 0.45, sf.pz, sf.nx, sf.nz, 5 + Math.round(9 * surfer.snapQ));
     }
   } else if (surfer.tumble < 0.9 && Math.random() < 0.6) {
     spray.rail(sf, surfer.psi, 1.4, 12, 2);
@@ -179,6 +202,10 @@ function frame(now) {
   hud.update(surfer, wave, dt);
   audio.update(surfer);
   pix.render(world.scene, rig.cam);
+  // Everything the substeps pushed has now been seen. Clearing here rather than inside
+  // update() is what stops most events being thrown away — the physics runs several substeps
+  // per frame, so a per-substep clear only ever delivered whatever the last one emitted.
+  surfer.clearEvents();
 }
 
 /** Slowly orbiting attract shot behind the start card. */

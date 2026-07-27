@@ -121,7 +121,7 @@ export const CFG = {
      * and you STAY there — releasing does not recentre you, because trimming a board is a
      * position, not a lean. Past stepAt you are properly walking rather than shifting.
      */
-    stanceRate: 1.15,     // stance units per second while a key is held
+    stanceRate: 2.30,     // stance units per second while a key is held
     stepAt: 0.45,         // |stance| past which it reads as walking the board
 
     // pushing the tail (space): how much leverage you have from where you are standing
@@ -165,6 +165,98 @@ export const CFG = {
     brokenOver: 9.0,      // metres behind the curl for the face to fully collapse
     brokenPhi: 0.44,
     brokenChop: 0.5,
+  },
+
+  /*
+   * THE SNAP. Double-tap the tail to break the board loose in one explosive rotation.
+   *
+   * Everything else in the rig is a lag — tailPush is an 83 ms filter feeding pivot, feeding
+   * dpsi, which is itself an 83 ms filter into turnRate. Two cascaded poles is ~0.4 s to full
+   * rate, which is why nothing here could ever be explosive. The snap deliberately bypasses
+   * that whole chain and drives psi directly.
+   *
+   * How good it comes out is decided entirely by WHERE you are when you tap, never by how
+   * long you held anything. The face terms below are what a snap is actually made of; speed
+   * is the equaliser that lets you force one out of a section that has not stood up.
+   */
+  snap: {
+    // How vertical the face is under you. The existing faceSteep map saturates at phi 1.5,
+    // which is useless here: measured phi runs 2.7-2.9 right at the curl and only drops to
+    // 1.57 some 20 m down the line, so a 0.35-1.5 window reads "maximum" across the whole
+    // pocket. This wider window actually discriminates a thrown lip from a vertical wall.
+    phiLo: 0.70,
+    phiHi: 2.60,
+
+    /*
+     * Weights on the three face terms; these sum to 1. Attack angle enters TWICE — once as
+     * its own share, and once as a partial multiplier on the section terms — because with a
+     * purely additive split, being high on a vertical wall while pointed straight DOWN the
+     * face still graded 163 deg. It should not: that is a drop, not a snap. atkFloor is how
+     * much of the section is still worth something with the nose aimed completely wrong.
+     */
+    wVert: 0.42,
+    wAttack: 0.40,
+    wHeight: 0.18,
+    atkFloor: 0.45,
+    /*
+     * The difficulty curve. These three are what make a GREAT snap rare rather than routine,
+     * and they are deliberately steep: a merely decent setup should return a merely decent
+     * snap. attackExp bites hardest — sin(psi) alone was too kind to a half-committed climb,
+     * so it is raised to a power and a lazy 35 deg approach now grades ~0.25 instead of 0.56.
+     */
+    attackExp: 1.60,
+    setupExp: 1.55,   // >1 so a mediocre setup is punished much harder than it looks
+    spdShare: 0.24,   // how much of the grade raw speed can buy on its own
+
+    // What the turn-drive and rail-drag terms are allowed to read as |turnRate| mid-snap.
+    // They were written for a carve topping out near 4 rad/s; see the note at the om cap.
+    omCap: 1.6,
+
+    degExp: 1.25,     // q -> angle curve. >1 holds the big angles back for a real setup.
+    durMin: 0.18,     // a flailed 25 deg flick...
+    durMax: 0.40,     // ...against a committed 200 deg rotation
+    cool: 0.45,       // seconds before another snap can fire
+
+    // the floor is TUNE.snapKeep so it can be dragged; this is the small projection a
+    // perfect snap hands back — the reward the tail stomp never gave you
+    keepBest: 1.02,
+    blownQ: 0.22,     // below this the snap counts as blown
+    stallTime: 0.80,  // and you bog for up to this long
+    stallDrag: 2.5,   // as a multiple of the linear drag term
+  },
+
+  /*
+   * THE PUMP. Double-tap forward: a compression and extension against the face that converts
+   * the wave's rising water into drive. It only pays where there IS rising water — out on a
+   * dead shoulder or the flat inside you are just bouncing on a board.
+   *
+   * `room` is what stops it being a free-energy pedal: the faster you are already going the
+   * less a pump returns, so it tops you up toward the wave's own speed rather than past it.
+   */
+  pump: {
+    gain: 1.25,       // m/s handed back by a perfectly placed pump
+    ceil: 17.0,       // speed at which a pump returns nothing at all
+    lift: 0.55,       // metres up the face it also carries you — where the speed comes from
+    step: 0.35,       // stance thrown FORWARD by the weight transfer — a pump is a lunge
+    cool: 0.38,       // pumping is rhythmic, so this is short
+    show: 0.30,       // how long the pump reads on the HUD/effects
+  },
+
+  /*
+   * THE BRAKE. Modal, not a one-shot: the double-tap back sets the rail and throws your weight
+   * over the fins, and then you HOLD back to keep it buried and let go when the section has
+   * come to you. Used to stall a barrel open in front of you.
+   *
+   * How much bite you get is how much of the tail you can actually reach — the same leverage
+   * curve the tail stamp uses — and because holding back also walks your stance toward the
+   * fins, keeping it down deepens the brake on its own. That loop IS the mechanic.
+   */
+  brake: {
+    cutNose: 0.96,    // speed retained by the initial stamp with no leverage...
+    cutTail: 0.62,    // ...and with all of it. Softer than a one-shot: the hold does the rest.
+    step: 0.35,       // stance thrown BACK over the fins by the weight transfer
+    holdDrag: 7.0,    // extra linear drag for as long as you keep it held, scaled by leverage
+    cool: 0.30,
   },
 
   pocket: {

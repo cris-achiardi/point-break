@@ -56,6 +56,15 @@ const ROWS = [
   // floor lowered from 2.00 — the tuned default landed exactly on it, same as camAhead did
   { g: 'CAMERA', key: 'camBack', label: 'CHASE BACK', min: 1.00, max: 14.00, step: 0.1, fmt: (v) => v.toFixed(1) + ' m' },
   { g: 'CAMERA', key: 'camHigh', label: 'CHASE HIGH', min: 0.60, max: 7.00, step: 0.1, fmt: (v) => v.toFixed(1) + ' m' },
+  { g: 'CAMERA', key: 'camLipLift', label: 'LIP LIFT', min: 0.00, max: 1.20, step: 0.01, fmt: (v) => (v * DEG).toFixed(0) + '°' },
+  { g: 'CAMERA', key: 'camLipWall', label: 'LIP TURN', min: 0.00, max: 8.00, step: 0.10, fmt: (v) => (Math.atan2(v, POV_AIM) * DEG).toFixed(0) + '°' },
+  { g: 'CAMERA', key: 'camSnapLead', label: 'SNAP LOOK', min: 0.00, max: 1.20, step: 0.01, fmt: (v) => (v * DEG).toFixed(0) + '°' },
+
+  { g: 'SNAP', key: 'snapWindow', label: 'TAP WINDOW', min: 0.12, max: 0.50, step: 0.01, fmt: (v) => v.toFixed(2) + ' s' },
+  { g: 'SNAP', key: 'snapMin', label: 'MIN ANGLE', min: 10, max: 90, step: 1, fmt: (v) => v.toFixed(0) + '°' },
+  { g: 'SNAP', key: 'snapMax', label: 'MAX ANGLE', min: 120, max: 320, step: 5, fmt: (v) => v.toFixed(0) + '°' },
+  { g: 'SNAP', key: 'snapSpeed', label: 'SPD REF', min: 6, max: 22, step: 0.5, fmt: (v) => v.toFixed(1) + ' m/s' },
+  { g: 'SNAP', key: 'snapKeep', label: 'BLOWN KEEP', min: 0.00, max: 1.00, step: 0.01, fmt: x2 },
 ];
 
 /**
@@ -113,6 +122,14 @@ const HINTS = {
   camDuckFwd: 'lens thrown forward by it — keeps the rider\'s head behind the lens',
   camBack: 'chase only: distance behind the rider',
   camHigh: 'chase only: height above them',
+  camLipLift: 'bottom turn: how far the aim lifts off the trim line toward the lip',
+  camLipWall: 'bottom turn: how much further the aim swings into the face',
+  camSnapLead: 'extra look-ahead while a snap rotates — the head goes before the board',
+  snapWindow: 'how quickly the two taps of a snap have to land',
+  snapMin: 'rotation a completely blown snap gives you',
+  snapMax: 'rotation a perfect one gives you — over 180 is a reverse',
+  snapSpeed: 'speed at which speed alone contributes its full share of the grade',
+  snapKeep: 'fraction of your speed a blown snap leaves you with',
 };
 
 
@@ -239,6 +256,9 @@ export class Tuner {
       `  ${pad('camDuck')}${TUNE.camDuck.toFixed(2)} m`,
       `  ${pad('camDuckFwd')}${TUNE.camDuckFwd.toFixed(2)} m`,
       `  ${pad('camLead')}${TUNE.camLead.toFixed(2)}     -> ${net < 0.5 ? 'no lead' : net.toFixed(0) + ' deg lead'} on a snap`,
+      `  ${pad('camLipLift')}${TUNE.camLipLift.toFixed(2)}    -> ${(TUNE.camLipLift * DEG).toFixed(0)} deg of tilt given back in a bottom turn`,
+      `  ${pad('camLipWall')}${TUNE.camLipWall.toFixed(2)} m  -> ${(Math.atan2(TUNE.camLipWall, POV_AIM) * DEG).toFixed(0)} deg further into the face`,
+      `  ${pad('camSnapLead')}${TUNE.camSnapLead.toFixed(2)}    -> ${(TUNE.camSnapLead * DEG).toFixed(0)} deg of extra whip during a snap`,
       'CAMERA  (chase)',
       `  ${pad('camBack')}${TUNE.camBack.toFixed(1)} m`,
       `  ${pad('camHigh')}${TUNE.camHigh.toFixed(1)} m`,

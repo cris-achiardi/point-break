@@ -82,14 +82,13 @@ export class Hud {
       e.callout.className = 'callout' + (text ? ' on ' + tone : '');
     }
 
-    // trick popups
-    this._trickT -= dt;
+    // Trick popups. `kind` used to be ignored entirely; it now tones the popup so a blown
+    // snap reads as a mistake and a reverse reads as gold, the way .callout already does.
     for (const ev of surfer.events) {
       e.trick.textContent = ev.text;
-      e.trick.classList.remove('pop');
+      e.trick.className = 'trick';
       void e.trick.offsetWidth;   // restart the animation
-      e.trick.classList.add('pop');
-      this._trickT = 0.85;
+      e.trick.className = 'trick pop' + (ev.kind ? ' ' + ev.kind : '');
     }
   }
 

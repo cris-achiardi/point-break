@@ -57,6 +57,26 @@ export const DEFAULTS = {
   camLead: 0.77,   // how far the head looks AHEAD of the board through a turn
   camBack: 2.00,   // chase only: distance behind the rider
   camHigh: 2.00,   // chase only: height above them
+  /*
+   * Where the head looks through a BOTTOM turn. Down in the trough swinging up at the wave you
+   * are not looking where the board points — you are looking up and across at the lip you are
+   * about to hit. These lift the aim off camPitch and swing it further into the face, scaled by
+   * how much of a bottom turn you are actually in. A top turn leaves them at zero and keeps the
+   * ordinary trim framing.
+   */
+  camLipLift: 0.55,  // radians of nose-down given back (can take the aim above horizontal)
+  camLipWall: 3.50,  // extra seaward bias on the aim, metres at the POV_AIM lever
+  camSnapLead: 0.45, // extra look-ahead while a snap is rotating — the head goes first
+
+  /*
+   * THE SNAP. Double-tap the tail. The model constants live in CFG.snap; these are the ones
+   * worth dragging while you play.
+   */
+  snapWindow: 0.28,  // seconds between the two taps
+  snapMin: 25,       // degrees of rotation from a completely blown snap...
+  snapMax: 215,      // ...and from a perfect one. Over 180 reads as a reverse.
+  snapSpeed: 13.0,   // speed (m/s) at which speed alone contributes its full share
+  snapKeep: 0.30,    // fraction of your speed a blown snap leaves you with
 };
 
 export const TUNE = { ...DEFAULTS };

@@ -26,6 +26,9 @@ import { clamp, clamp01, lerp, approach, smoothstep, wrapPi } from './rng.js';
 const P = CFG.phys;
 const K = CFG.pocket;
 const S = CFG.score;
+const N = CFG.snap;
+const PU = CFG.pump;
+const BR = CFG.brake;
 
 // State is kept for the renderer/HUD, but the surfer is only ever RIDING now — nothing ends
 // the run. The other values remain so older callers that reference them still resolve.
@@ -88,6 +91,25 @@ export class Surfer {
     this.topSpd = 0;
     this.dist = 0;
 
+    // the snap — see CFG.snap and _fireSnap()
+    this.snapT = 0;        // seconds of rotation left to run
+    this.snapDur = 0;      // ...out of this many, so the camera can shape an envelope
+    this.snapRate = 0;     // rad/s, driven straight into psi
+    this.snapDir = 1;
+    this.snapQ = 0;        // grade of the last snap, 0..1 — read by the HUD and the camera
+    this.snapDeg = 0;
+    this.snapCool = 0;
+    this.stallT = 0;       // bogged after a blown one
+    this.snapCount = 0;
+    this.bestSnap = 0;
+
+    this.pumpT = 0;        // decaying flag for the HUD and effects
+    this.pumpCool = 0;
+    this.pumpQ = 0;
+    this.braking = false;  // modal: entered by a double-tap back, held, then released
+    this.brakeT = 0;       // how long it has been buried, for the HUD and effects
+    this.brakeCool = 0;
+
     // scoring
     this.score = 0;
     this.combo = 1;
@@ -101,6 +123,7 @@ export class Surfer {
     this._swing = 0;
     this._swingDir = 0;
     this._swingPeak = 0;
+    this._swingRate = 0;   // peak |turnRate| over the current arc
 
     this.events = [];
     this.endReason = '';
@@ -188,16 +211,67 @@ export class Surfer {
     const tailLev = clamp01(P.tailLevBase + P.tailLevGain * (P.tailLevPivot - this.w));
     this.tailPush = approach(this.tailPush, (input.tail || 0) * tailLev, 12, dt);
 
+    /*
+     * THE SNAP. Double-tapping the tail breaks the board loose in one explosive rotation.
+     *
+     * Note this is checked BEFORE the ordinary steering below and then overrides it. It has
+     * to: everything in the normal path is a lag (tailPush 83 ms -> pivot -> dpsi -> turnRate
+     * another 83 ms), so a snap routed through it would arrive a third of a second late and
+     * mushy. Here psi is driven directly and turnRate is *assigned* rather than approached,
+     * which also means lean, camera roll, spray and the audio hiss bed all read the snap for
+     * free without any of them knowing it exists.
+     */
+    // hoisted: aTurn reads this further down, outside the snap branch below
     const flow = clamp01((vw + faceFlow * 0.45) / P.railFlow);
-    const carve = P.turnBase * (1 - P.turnDriveDamp * drive) * grip * (0.20 + 0.80 * flow) / lenR;
-    const pivot = P.turnPivot * this.tailPush * (0.35 + 0.65 * flow) * finLever / Math.sqrt(lenR);
-    let dpsi = input.steer * (carve + pivot);
-    // gravity gently drops the nose down the face when you are just riding along
-    if (Math.abs(this.psi) < P.gravTurnTo) {
-      dpsi -= P.gravTurn * Math.sin(beta) * Math.cos(this.psi) * clamp01(this.spd / 6) * onFace;
+
+    this.snapCool = Math.max(0, this.snapCool - dt);
+    this.stallT = Math.max(0, this.stallT - dt);
+    this.pumpT = Math.max(0, this.pumpT - dt);
+    this.pumpCool = Math.max(0, this.pumpCool - dt);
+    this.brakeCool = Math.max(0, this.brakeCool - dt);
+
+    if (input.takeDouble) {
+      // A snap needs a direction to go: the double-tap breaks the tail loose, the steer is
+      // what it breaks loose INTO. Tapping with no rail engaged is not a manoeuvre.
+      if (input.takeDouble('tail') && input.steer !== 0
+          && this.snapT <= 0 && this.snapCool <= 0 && onFace > 0.5) {
+        this._fireSnap(fd, input);
+      }
+      if (input.takeDouble('up') && this.pumpCool <= 0 && onFace > 0.5) {
+        this._firePump(fd, pw);
+      }
+      if (input.takeDouble('down') && this.brakeCool <= 0) this._fireBrake(tailLev);
     }
-    this.turnRate = approach(this.turnRate, dpsi, 12, dt);
-    this.psi = wrapPi(this.psi + this.turnRate * dt);
+    // Let go of back and the rail comes up. Holding it is what keeps the brake on — and
+    // because holding back is ALSO what walks your stance toward the fins, the longer you
+    // hold the more leverage you have and the harder it bites. That loop is the mechanic.
+    if (this.braking && input.weight >= 0) { this.braking = false; this.brakeT = 0; }
+    if (this.braking) this.brakeT += dt;
+
+    if (this.snapT > 0) {
+      const step = Math.min(dt, this.snapT);
+      this.psi = wrapPi(this.psi + this.snapDir * this.snapRate * step);
+      this.snapT -= step;
+      this.turnRate = this.snapDir * this.snapRate;
+      if (this.snapT <= 0) {
+        // Hand the arc back to _scoreTurns clean, or it reads the whole snap as a swing it
+        // just watched happen and pays out a phantom cutback on top of the snap's own score.
+        this._swing = 0;
+        this._swingDir = 0;
+        this._swingPeak = Math.abs(this.psi);
+        this._swingRate = 0;
+      }
+    } else {
+      const carve = P.turnBase * (1 - P.turnDriveDamp * drive) * grip * (0.20 + 0.80 * flow) / lenR;
+      const pivot = P.turnPivot * this.tailPush * (0.35 + 0.65 * flow) * finLever / Math.sqrt(lenR);
+      let dpsi = input.steer * (carve + pivot);
+      // gravity gently drops the nose down the face when you are just riding along
+      if (Math.abs(this.psi) < P.gravTurnTo) {
+        dpsi -= P.gravTurn * Math.sin(beta) * Math.cos(this.psi) * clamp01(this.spd / 6) * onFace;
+      }
+      this.turnRate = approach(this.turnRate, dpsi, 12, dt);
+      this.psi = wrapPi(this.psi + this.turnRate * dt);
+    }
 
     /* -- longitudinal forces --------------------------------------------- */
     // gravity along the surface: down the face on the wave, off the back once you go over.
@@ -236,7 +310,17 @@ export class Surfer {
      * you went in (Surf Simply / Landell-Mills). Gated by the up-flow energy (pocket * steep)
      * rather than a mid-face band, so it works low on the face where the bottom turn happens.
      */
-    const om = Math.abs(this.turnRate);
+    /*
+     * Cap the rotation rate that the turn-drive and rail-drag terms are allowed to see while
+     * a snap is running. Both were written for a carve, where |turnRate| tops out around 4:
+     * aTurn goes as om^2, so at a snap's 10-16 rad/s it saturates turnDriveMax outright and a
+     * BLOWN snap would collect exactly as much drive as a perfect one, and rail drag goes as
+     * om, so it would scrub speed by how fast you spun rather than by how well you did it.
+     * The snap pays and rewards through _fireSnap instead, on quality.
+     */
+    const om = this.snapT > 0
+      ? Math.min(Math.abs(this.turnRate), N.omCap)
+      : Math.abs(this.turnRate);
     const bite = P.finBiteBase + P.finBiteGain * TUNE.finPos;
     const upFlow = pw * (0.35 + 0.65 * fd.steep);
     const aTurn = Math.min(P.turnDriveMax, TUNE.turnDrive * P.btGain * om * om * upFlow * flow)
@@ -258,6 +342,10 @@ export class Surfer {
     // off the face — the back or the deep inside — there is no wall to plane on, so you bog
     if (onFace < 0.5) aDrag -= P.dragLin * 3.0 * this.spd;
     if (this.u < -0.2) aDrag -= P.dragLin * P.flatsGlide * this.spd;   // gliding the inside
+    // a blown snap does not just cost you the speed, it leaves you bogged for a moment
+    if (this.stallT > 0) aDrag -= P.dragLin * N.stallDrag * this.spd;
+    // the buried rail, for as long as you hold it there
+    if (this.braking) aDrag -= P.dragLin * BR.holdDrag * tailLev * this.spd;
 
     this.spd = Math.max(0, this.spd + (aGrav + aPush + aPump + aTurn + aWave + aDrag) * dt);
     this.topSpd = Math.max(this.topSpd, this.vWater);
@@ -338,7 +426,8 @@ export class Surfer {
     else this.foamT = Math.max(0, this.foamT - dt * 1.8);
 
     /* -- scoring: reward being in the pocket ----------------------------- */
-    this._scoreTurns(dt);
+    // not while a snap is rotating — _fireSnap already paid for that arc
+    if (this.snapT <= 0) this._scoreTurns(dt);
 
     const trimming = pw > 0.5 && Math.abs(this.turnRate) < 0.28 && this.spd > 8 && this.u > 0.18;
     if (trimming) {
@@ -364,16 +453,141 @@ export class Surfer {
       clamp01(brake * 0.8 + Math.abs(this.turnRate) * 0.35 + (1 - pw) * 0.1), 7, dt);
   }
 
+  /**
+   * Grade a snap off WHERE YOU ARE and let it rip. Nothing here reads how long you held
+   * anything — the whole mechanic is timing and position on the wave.
+   *
+   * The three face terms are what a snap is actually made of, and they are summed rather than
+   * multiplied: a product would let any single zero (flat section, nose pointing the wrong
+   * way) annihilate the whole thing, and then speed could never rescue a bad setup the way it
+   * should. Speed comes in as a separate share on top, so a fast rider can force a workable
+   * snap out of a section that has not stood up, but can never buy a perfect one.
+   */
+  _fireSnap(fd, input) {
+    /*
+     * How far up the face you are, normalised by the HIGHEST point you could possibly reach
+     * here. This has to be normalised: uFromRun caps u at the apex, and the apex is only 0.64
+     * right at the curl (it opens to 1.0 out on the fat shoulder). Grading raw u against a
+     * fixed threshold would make a perfect pocket snap literally unscoreable.
+     */
+    const apex = colApexU();
+    const height = clamp01(this.u / Math.max(0.20, apex));
+    const vert = clamp01((fd.phi - N.phiLo) / (N.phiHi - N.phiLo));
+    // Driving UP the face. Pointing down it is not an attack angle, it is a drop. Raised to
+    // a power because plain sin() was far too kind to a half-committed climb.
+    const attack = Math.pow(clamp01(Math.sin(Math.max(0, this.psi))), N.attackExp);
+    const fast = clamp01(this.spd / TUNE.snapSpeed);
+
+    // Attack angle both carries its own share AND gates the section terms, so a vertical wall
+    // hit with the nose pointed down the face cannot score like a snap — it is a drop.
+    const setup = (N.wVert * vert + N.wHeight * height)
+        * (N.atkFloor + (1 - N.atkFloor) * attack)
+      + N.wAttack * attack;
+    const q = clamp01(Math.pow(setup, N.setupExp) * (1 - N.spdShare) + fast * N.spdShare);
+    const deg = lerp(TUNE.snapMin, TUNE.snapMax, Math.pow(q, N.degExp));
+
+    this.snapDir = Math.sign(input.steer);   // gated on a non-zero steer by the caller
+    const dur = lerp(N.durMin, N.durMax, q);
+    this.snapRate = (deg * Math.PI / 180) / dur;
+    this.snapT = dur;
+    this.snapDur = dur;
+    this.snapCool = N.cool;
+    this.snapQ = q;
+    this.snapDeg = deg;
+    this.snapCount++;
+    this.bestSnap = Math.max(this.bestSnap, q);
+
+    // A clean snap redirects your energy; a blown one dumps it on the deck and bogs you.
+    this.spd *= lerp(TUNE.snapKeep, N.keepBest, q);
+    if (q < N.blownQ) this.stallT = N.stallTime * (1 - q / N.blownQ);
+
+    const full = deg >= 180;
+    if (q >= N.blownQ) {
+      this.sTurns += S.turnBase * (0.6 + 2.2 * q) * this.combo;
+      this.combo = Math.min(S.comboMax, this.combo + 0.25 + 0.4 * q);
+    }
+    /*
+     * A weak snap out where there is no pocket is not a mistake — it is a speed check, the
+     * standard way to scrub off a few knots and let the section come to you. Only call it
+     * blown if you tried it somewhere it should have worked.
+     */
+    const checking = fd.pocket < 0.35;
+    const label = full ? 'REVERSE'
+      : q >= 0.72 ? 'PERFECT SNAP'
+        : q >= 0.48 ? 'CLEAN SNAP'
+          : checking ? 'SPEED CHECK'
+            : q >= N.blownQ ? 'SNAP' : 'BLOWN IT';
+    this.push(label, full || q >= 0.72 ? 'snapfull' : q >= 0.48 ? 'snapgood'
+      : checking || q >= N.blownQ ? 'snapok' : 'blown');
+  }
+
+  /**
+   * A PUMP. Compress and extend against the face, and the rising water hands you drive.
+   *
+   * The whole thing is gated on there actually being rising water to push against: full
+   * pocket on a stood-up steep section pays, a dead shoulder or the flat inside pays nothing.
+   * `room` keeps it honest — the closer you already are to the ceiling the less it returns —
+   * so a pump tops you up toward the wave's speed instead of ratcheting past it.
+   */
+  _firePump(fd, pw) {
+    const steepq = clamp01((fd.phi - 0.35) / 1.15);
+    const q = clamp01(pw * (0.35 + 0.65 * steepq) * fd.stand);
+    const room = clamp01(1 - this.vWater / PU.ceil);
+    this.spd += PU.gain * q * room;
+    /*
+     * ...and it carries you up the face, which is where that speed actually came from. Gated
+     * against the same high line the rail grip uses: pumping drives you up the wall, it does
+     * not launch you over the back of it, and without this ceiling repeated pumps would walk
+     * you straight past the apex and off the shoulder.
+     */
+    const hi = Math.min(P.gripLine, colApexU());
+    const up = q * clamp01((hi - this.u) / 0.4);
+    this.x += fd.nx * PU.lift * up;
+    this.z += fd.nz * PU.lift * up;
+    // the weight lunges forward onto the front foot — a pump is a lunge, not a button
+    this.w = clamp(this.w + PU.step, -1, 1);
+    this.pumpQ = q;
+    this.pumpT = PU.show;
+    this.pumpCool = PU.cool;
+    if (q > 0.30) this.push('PUMP', 'pump');
+  }
+
+  /**
+   * A BRAKE. Stamp the tail and dump speed, to let a section stand up in front of you or to
+   * sit back into a barrel.
+   *
+   * Strength is your leverage over the tail — the same curve the held tail stamp uses, so
+   * standing over the nose you can barely check at all and standing over the fins you can put
+   * the brakes right on. That makes it a stance decision, not a free button.
+   */
+  _fireBrake(lev) {
+    this.spd *= lerp(BR.cutNose, BR.cutTail, lev);
+    // the weight goes back over the fins with it — that is what a brake IS, and it hands you
+    // the leverage for the hold that follows
+    this.w = clamp(this.w - BR.step, -1, 1);
+    this.braking = true;
+    this.brakeT = 0;
+    this.brakeCool = BR.cool;
+    this.push(lev > 0.65 ? 'HARD BRAKE' : 'CHECK', 'brake');
+  }
+
   /** Reward a completed direction change: bigger swing + more speed kept = better. */
   _scoreTurns(dt) {
     const dp = this.turnRate * dt;
     this._swingPeak = Math.max(this._swingPeak, Math.abs(this.psi));
+    this._swingRate = Math.max(this._swingRate, Math.abs(this.turnRate));
     const dir = Math.sign(dp);
     if (dir !== 0 && dir !== this._swingDir) {
       if (Math.abs(this._swing) > 0.62 && this.spd > 5) {
         const amp = Math.min(Math.abs(this._swing), 3.2);
         const fast = clamp01(this.spd / 15);
-        const sharp = clamp01(Math.abs(this.turnRate) / 1.4);
+        /*
+         * How hard the arc was, measured as the PEAK rate over it rather than the rate right
+         * now. "Now" is the substep the rate crossed zero to trigger this branch, so it is
+         * near zero by construction — which is why OFF THE TOP (needs 0.55) and BOTTOM TURN
+         * (needs 0.6) were unreachable and every turn read as a CARVE or a DRIVE.
+         */
+        const sharp = clamp01(this._swingRate / 1.4);
         const back = this._swing > 0;
         const cutback = back && this._swingPeak > 1.62;
         const gain = S.turnBase * amp * (0.45 + 0.85 * fast) * (cutback ? 1.6 : 1) * this.combo;
@@ -387,15 +601,24 @@ export class Surfer {
       }
       this._swing = 0;
       this._swingPeak = Math.abs(this.psi);
+      this._swingRate = 0;
       this._swingDir = dir;
     }
     this._swing += dp;
   }
 
+  /*
+   * NB: this does NOT clear `events` — main.js calls clearEvents() once per rendered frame.
+   * It used to clear here, which quietly threw most of them away: the physics runs several
+   * fixed substeps per frame, so only whatever the LAST substep happened to emit survived to
+   * be seen. Turn callouts were being dropped about half the time, and a snap (which fires on
+   * exactly one substep) would have been worse.
+   */
   update(dt, input) {
-    this.events.length = 0;
     this.step(dt, input);
   }
+
+  clearEvents() { this.events.length = 0; }
 
   /** The run never ends on its own any more — you free-roam until you restart. */
   get alive() { return true; }

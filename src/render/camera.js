@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import { CFG } from '../config.js';
 import { TUNE } from '../tuning.js';
-import { clamp, clamp01, approach } from '../rng.js';
+import { clamp, clamp01, approach, smoothstep } from '../rng.js';
 
 export const CAM = { CHASE: 0, POV: 1 };
 
@@ -45,6 +45,35 @@ const CHASE_LEAD = 0.82;  // a rig behind you swivels less than a neck does...
 const CHASE_WALL = 0.54;  // ...and needs less bias to keep the wall in frame
 const YAW_K = [4.4, 5.0]; // [chase, pov] follow rate — damped, no snap
 
+/* --------------------------------------------------------------- bottom turn
+ * Down in the trough swinging back up at the wave, a rider is not looking where the board
+ * points — they are looking up and across at the lip they are about to hit. Off the top they
+ * are looking back down the face, which is what the ordinary trim framing already does.
+ *
+ * Detected from height plus turn direction, so it works either way round: you only read as
+ * being in a bottom turn when you are LOW and actually swinging toward the lip. Trimming sits
+ * at turnRate ~ 0, so BOT_RATE gates it off no matter how low you are.
+ */
+const BOT_U_LO = 0.10;    // fully "low" at or under this height on the face...
+const BOT_U_HI = 0.45;    // ...and not low at all above this
+const BOT_RATE = 1.2;     // rad/s of up-the-face swing that counts as fully committed
+const BOT_K = 6;          // eased, so the lip focus swings in rather than snapping on
+
+/* ---------------------------------------------------------------- snap whip
+ * Without these the snap look-ahead is invisible, and the arithmetic is worth spelling out.
+ *
+ * The lead term is CLAMPED (LEAD_CLAMP), so it saturates at camLead*2.2 ~ 97 deg. The yaw
+ * ease's own lag is NOT clamped — tracking a ramp at rate w it sits w/YAW_K behind. So:
+ *
+ *      w = 2.2 (a hard carve)  ->  97 - 25 = 72 deg of net look-ahead
+ *      w = 8   (a snap)        ->  97 - 92 =  5 deg
+ *
+ * i.e. the faster you rotate the LESS the head leads, which is exactly backwards. Adding
+ * more camSnapLead barely helps; the fix is to quicken the neck for the duration instead.
+ */
+const SNAP_YAW = 1.6;     // extra follow rate while a snap runs — the big lever
+const SNAP_NECK = 1.4;    // ...and the lead itself has to arrive quicker, or it never lands
+
 /**
  * What TUNE.camLead is actually worth on screen, in degrees, at a hard snap: the gain minus
  * the yaw ease's own lag. The tuner labels its slider with this so the readout cannot claim
@@ -69,6 +98,7 @@ export class CameraRig {
     this.first = true;
     this.yaw = 0;                       // camera bearing, eased toward the travel direction
     this.lead = 0;                      // how far the head is looking ahead of the board
+    this.bottom = 0;                    // 0..1, how much of a bottom turn we are in
     this._tvx = 1; this._tvz = 0;       // last good travel direction
     this._lpx = 0; this._lpz = 0;       // last board position, for the velocity estimate
   }
@@ -94,13 +124,24 @@ export class CameraRig {
     const bl = Math.hypot(bx, bz) || 1; bx /= bl; bz /= bl;
 
     const targetYaw = Math.atan2(bz, bx);
+    /*
+     * Added AFTER the clamp, deliberately. A snap drives turnRate far past LEAD_CLAMP, so the
+     * turn-rate term is already pinned at maximum and any extra rotation would be invisible —
+     * this stacks the head whip on top of that ceiling instead of disappearing under it.
+     */
+    // Holds high through the first half of the rotation and eases out — the head arriving at
+    // the new sightline and WAITING there while the board catches up. That wait is the whip;
+    // a linear decay just reads as drift.
+    const snapEnv = surfer.snapDur > 0
+      ? smoothstep(0, 1, clamp01(surfer.snapT / surfer.snapDur)) : 0;
+    const snapLead = surfer.snapDir * TUNE.camSnapLead * snapEnv;
     const leadTarget = clamp(surfer.turnRate, -LEAD_CLAMP, LEAD_CLAMP)
-      * TUNE.camLead * (this.mode === CAM.POV ? 1 : CHASE_LEAD);
+      * TUNE.camLead * (this.mode === CAM.POV ? 1 : CHASE_LEAD) + snapLead;
     if (this.first) { this.yaw = targetYaw; this.lead = leadTarget; }
     let dyaw = targetYaw - this.yaw;
     dyaw = Math.atan2(Math.sin(dyaw), Math.cos(dyaw));            // shortest way round
-    this.yaw += dyaw * (1 - Math.exp(-YAW_K[this.mode] * dt));
-    this.lead = approach(this.lead, leadTarget, LEAD_K, dt);
+    this.yaw += dyaw * (1 - Math.exp(-YAW_K[this.mode] * (1 + SNAP_YAW * snapEnv) * dt));
+    this.lead = approach(this.lead, leadTarget, LEAD_K * (1 + SNAP_NECK * snapEnv), dt);
 
     // The BODY (where the rig sits) tracks the board; the HEAD (where it looks) runs ahead of
     // it into the turn. Keeping the lead out of the eye position is the whole point — swing
@@ -121,6 +162,14 @@ export class CameraRig {
     // seaward (up-the-face) horizontal direction — keeps the wall in frame
     const ex = nxh, ez = nzh;
 
+    // how much of a bottom turn this is, and therefore how far the head comes off the trim
+    // line to find the lip. Off the top this stays at 0 and the framing is unchanged.
+    const low = 1 - smoothstep(BOT_U_LO, BOT_U_HI, surfer.u);
+    const upSwing = clamp01(surfer.turnRate / BOT_RATE);
+    this.bottom = approach(this.bottom, low * upSwing * surfer.onFace, BOT_K, dt);
+    const pitch = TUNE.camPitch - this.bottom * TUNE.camLipLift;   // can go above horizontal
+    const wall = TUNE.camWall + this.bottom * TUNE.camLipWall;
+
     if (this.mode === CAM.POV) {
       // Ride on the head: walk the deck with the stance, duck and pitch forward with the
       // compression. The lean term is not decoration — the torso rotates ~0.42 rad as the
@@ -137,9 +186,9 @@ export class CameraRig {
         pz + bz * fwd + sz * TUNE.camSide,
       );
       this._a.set(
-        this._e.x + hx * POV_AIM + ex * TUNE.camWall,
-        this._e.y - Math.sin(TUNE.camPitch) * POV_AIM,
-        this._e.z + hz * POV_AIM + ez * TUNE.camWall,
+        this._e.x + hx * POV_AIM + ex * wall,
+        this._e.y - Math.sin(pitch) * POV_AIM,
+        this._e.z + hz * POV_AIM + ez * wall,
       );
     } else {
       // Sit DIRECTLY behind the nose (no sideways offset toward the wall) so the board points
@@ -147,11 +196,13 @@ export class CameraRig {
       // small up-face lift so the wall still frames — the same view as the mouth cam, pulled
       // back behind the rider.
       const back = TUNE.camBack + clamp01(surfer.spd / 20) * 2.2;
-      const wall = TUNE.camWall * CHASE_WALL;
+      const cw = wall * CHASE_WALL;
       this._e.set(px - fx * back + rx * TUNE.camSide, py + TUNE.camHigh, pz - fz * back + rz * TUNE.camSide);
       // ...whereas this aim is anchored to the RIDER, not to _e, so out here camSide swings
       // the rig round them into a side-on view rather than dollying the whole shot across.
-      this._a.set(px + hx * 9 + ex * wall, py + TUNE.camHigh - 0.9, pz + hz * 9 + ez * wall);
+      this._a.set(px + hx * 9 + ex * cw,
+        py + TUNE.camHigh - 0.9 + this.bottom * TUNE.camLipLift * 4,
+        pz + hz * 9 + ez * cw);
     }
 
     // keep the lens above water
