@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>POINT BREAK</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <div id="hud" class="hud">
+    <!-- top left: speed -->
+    <div class="panel tl">
+      <div class="speed"><span id="spd">0</span><em>km/h</em></div>
+      <div class="row"><span class="k">TIME</span><span id="time" class="v">0.0</span></div>
+      <div class="row"><span class="k">DIST</span><span id="dist" class="v">0</span></div>
+    </div>
+
+    <!-- top right: score -->
+    <div class="panel tr">
+      <div class="score" id="score">0</div>
+      <div class="row right"><span id="mult" class="v mult">x1.0</span></div>
+    </div>
+
+    <!-- centre top: what the wave is doing ahead -->
+    <div id="callout" class="callout"></div>
+    <div id="trick" class="trick"></div>
+
+    <!-- bottom: the pocket meter -->
+    <div class="panel bottom">
+      <div class="meter">
+        <div class="zone foam"></div>
+        <div class="zone pocket"></div>
+        <div class="zone shoulder"></div>
+        <div class="tick" id="marker"></div>
+      </div>
+      <div class="meterlabels">
+        <span>FOAM</span><span class="pk" id="closing">HOLDING</span><span>SHOULDER</span>
+      </div>
+      <div class="weightbar"><i id="weight"></i><u id="trimmark"></u></div>
+      <div class="meterlabels small"><span>TAIL</span><span id="stance"></span><span>NOSE</span></div>
+    </div>
+
+    <div id="barrel" class="barrelflag">IN THE BARREL</div>
+  </div>
+
+  <!-- live wave tuning -->
+  <div id="tuner" class="tuner">
+    <h2>WAVE <i>TAB</i></h2>
+    <div id="tuner-rows"></div>
+    <div class="derived" id="t-derived"></div>
+    <div class="tbtns">
+      <button id="t-copy" class="tbtn">COPY</button>
+      <button id="t-reset" class="tbtn ghost">RESET</button>
+    </div>
+    <p class="tnote" id="t-default">modified &mdash; copy to share these values</p>
+  </div>
+
+  <!-- start / end overlays -->
+  <div id="overlay" class="overlay">
+    <div class="card" id="card">
+      <h1>POINT BREAK</h1>
+      <p class="sub">right-hander &middot; 60 second ride</p>
+      <div class="keys">
+        <div><b>&rarr;</b><span>turn up the face, toward the lip</span></div>
+        <div><b>&larr;</b><span>turn down toward the trough</span></div>
+        <div><b>&uarr; &darr;</b><span>walk the board &mdash; you stay where you step</span></div>
+        <div><b>SPACE</b><span>stamp the tail for a hard pivot</span></div>
+      </div>
+      <p class="tip">Standing <b>forward</b> planes the board flat: glide, speed, long drawn
+        rail arcs. Standing <b>back</b> sinks the tail &mdash; slower, but it puts you over the
+        fins. You can only stamp a tail you're standing near, so walk back before you commit
+        to a turn, and walk forward to run.</p>
+      <p class="tip">It's a right, so the wall is on your <b>right</b> and the flats are on your
+        left. Stay in the <b>pocket</b>: outrun it and you're stranded on a dead shoulder with
+        nothing to score, sit behind it and the foam eats you. Read the wall ahead &mdash; a
+        <b>fast section</b> wants a high, straight, driving line, a <b>fat section</b> wants you
+        to brake and carve back into the power.</p>
+      <button id="go">DROP IN</button>
+      <p class="foot">C camera &middot; R restart &middot; M mute &middot; P pause &middot; TAB tune the wave</p>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
