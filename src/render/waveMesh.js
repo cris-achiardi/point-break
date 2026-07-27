@@ -140,9 +140,13 @@ export class WaveMesh {
           u = 0;
           run = troughRun + r.flat;   // shoreward of the trough, which sits under the lip line
           beta = 0;
-          // inside water: a lazy chop, plus churn where it has already broken
-          ht = Math.sin(s * 0.09 + t * 1.1 + r.flat * 0.05) * 0.16
-             + Math.sin(r.flat * 0.21 - t * 1.7) * 0.09
+          // Inside water: a lazy chop, plus churn where it has already broken. Biased up so
+          // the troughs of the chop stay at the wave's datum rather than below it — the open
+          // ocean plane sits just under that datum (see OCEAN_Y in scene.js), and anything
+          // here that dips through it gets drawn over by the flat sea.
+          ht = 0.10
+             + Math.sin(s * 0.09 + t * 1.1 + r.flat * 0.05) * 0.13
+             + Math.sin(r.flat * 0.21 - t * 1.7) * 0.07
              + chop * (0.28 + 0.5 * hash2(Math.floor(s * 0.9), j + t * 2.2));
         } else {
           u = r.u;

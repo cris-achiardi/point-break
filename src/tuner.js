@@ -5,6 +5,7 @@
  */
 import { TUNE, DEFAULTS, loadTune, saveTune, resetTune } from './tuning.js';
 import { waveSummary } from './wave.js';
+import { POV_AIM, netLeadDeg } from './render/camera.js';
 
 const $ = (id) => document.getElementById(id);
 const DEG = 180 / Math.PI;
@@ -32,7 +33,56 @@ const ROWS = [
   { g: 'BOARD', key: 'gravity', label: 'GRAVITY', min: 0.50, max: 2.40, step: 0.01, fmt: x2 },
   { g: 'BOARD', key: 'turnDrive', label: 'TURN PUMP', min: 0.00, max: 3.00, step: 0.01, fmt: x2 },
   { g: 'BOARD', key: 'railDrag', label: 'RAIL DRAG', min: 0.00, max: 0.30, step: 0.005, fmt: (v) => v.toFixed(3) },
+
+  /*
+   * Camera placement. All of these are the mouth-mount POV except BACK/HIGH, which only move
+   * the chase rig — press C to see what you are dragging. LOOK AHEAD reads out as the net
+   * degrees the head gets ahead of the board on a hard snap, because the raw gain is not the
+   * whole story: the yaw ease eats the first 0.20 of it (see camera.js).
+   */
+  { g: 'CAMERA', key: 'camEye', label: 'HEIGHT', min: 0.70, max: 1.90, step: 0.01, fmt: (v) => v.toFixed(2) + ' m' },
+  // ceiling raised from 0.90 — the tuned default landed exactly on the old one, which is
+  // usually a slider that ran out of room rather than a value someone chose
+  { g: 'CAMERA', key: 'camAhead', label: 'FORWARD', min: -0.10, max: 1.60, step: 0.01, fmt: (v) => v.toFixed(2) + ' m' },
+  { g: 'CAMERA', key: 'camSide', label: 'SIDEWAYS', min: -3.00, max: 3.00, step: 0.05, fmt: (v) => v.toFixed(2) + ' m' },
+  { g: 'CAMERA', key: 'camPitch', label: 'TILT DOWN', min: 0.00, max: 0.70, step: 0.01, fmt: (v) => (v * DEG).toFixed(0) + '°' },
+  { g: 'CAMERA', key: 'camFov', label: 'LENS', min: 40, max: 105, step: 1, fmt: lensFmt },
+  { g: 'CAMERA', key: 'camWall', label: 'WALL', min: 0.00, max: 7.00, step: 0.10, fmt: (v) => (Math.atan2(v, POV_AIM) * DEG).toFixed(0) + '°' },
+  { g: 'CAMERA', key: 'camLead', label: 'LOOK AHEAD', min: 0.00, max: 0.90, step: 0.01, fmt: leadFmt },
+  { g: 'CAMERA', key: 'camRoll', label: 'LEAN IN', min: 0.00, max: 1.00, step: 0.01, fmt: (v) => v <= 0.005 ? 'level' : v.toFixed(2) + '×' },
+  { g: 'CAMERA', key: 'camWalk', label: 'WALK', min: 0.00, max: 2.50, step: 0.05, fmt: (v) => v <= 0.005 ? 'off' : x2(v) },
+  { g: 'CAMERA', key: 'camDuck', label: 'DUCK', min: 0.00, max: 0.60, step: 0.01, fmt: (v) => v.toFixed(2) + ' m' },
+  { g: 'CAMERA', key: 'camDuckFwd', label: 'DUCK FWD', min: 0.00, max: 0.60, step: 0.01, fmt: (v) => v.toFixed(2) + ' m' },
+  // floor lowered from 2.00 — the tuned default landed exactly on it, same as camAhead did
+  { g: 'CAMERA', key: 'camBack', label: 'CHASE BACK', min: 1.00, max: 14.00, step: 0.1, fmt: (v) => v.toFixed(1) + ' m' },
+  { g: 'CAMERA', key: 'camHigh', label: 'CHASE HIGH', min: 0.60, max: 7.00, step: 0.1, fmt: (v) => v.toFixed(1) + ' m' },
 ];
+
+/**
+ * Read out the NET lead on a hard snap, not the raw gain. The yaw ease is a first-order lag
+ * that already sits behind the board, so it eats the bottom of the gain outright and low
+ * settings honestly read 'none' — far less confusing than a slider that visibly moves while
+ * nothing on screen changes. camera.js owns the arithmetic.
+ */
+function leadFmt(v) {
+  const net = netLeadDeg(v);
+  return net < 0.5 ? 'none' : net.toFixed(0) + '°';
+}
+
+/**
+ * three.js measures fov VERTICALLY, which is not what anyone means by "wide" — on a 2.3:1
+ * frame the horizontal angle is far larger. Tag the ends so the bare number does not get
+ * read as a horizontal one.
+ *
+ * NB: a declaration, not a const arrow. ROWS above holds a direct reference to this, and
+ * ROWS is evaluated at module load — a const would still be in its temporal dead zone at
+ * that point and throw before the Tuner ever gets built. Same for leadFmt.
+ */
+function lensFmt(v) {
+  return v.toFixed(0) + '°' + (v >= 88 ? ' wide' : v <= 52 ? ' tight' : '');
+}
+
+const CAM_KEYS = ROWS.filter((r) => r.g === 'CAMERA').map((r) => r.key);
 
 
 const HINTS = {
@@ -49,6 +99,20 @@ const HINTS = {
   gravity: 'speed the drop hands you',
   turnDrive: 'speed a hard turn makes',
   railDrag: 'what a carve costs',
+  camEye: 'lens height above the board — 1.22 is the rider\'s own head',
+  camAhead: 'how far the mount pokes out in front of the face',
+  camSide: 'slide the lens right (+, toward the wall) or left — POV dollies, chase swings round',
+  camPitch: 'nose-down tilt — this is what puts the board in shot, at the cost of the wall',
+  camFov: 'lens angle, measured vertically. Wider pulls the board into frame on its own, '
+    + 'so drop TILT DOWN as you open it up',
+  camWall: 'how hard the view is turned into the face',
+  camLead: 'how far the head looks ahead through a turn, so the board trails',
+  camRoll: 'roll INTO the turn, as a fraction of the rider\'s own lean',
+  camWalk: 'how much of the up/down stance walk the mount inherits — 1 is bolted to the head',
+  camDuck: 'lens dropped by a full compression',
+  camDuckFwd: 'lens thrown forward by it — keeps the rider\'s head behind the lens',
+  camBack: 'chase only: distance behind the rider',
+  camHigh: 'chase only: height above them',
 };
 
 
@@ -99,6 +163,7 @@ export class Tuner {
     }
 
     $('t-copy').addEventListener('click', () => this.copy());
+    $('t-copy-cam').addEventListener('click', () => this.copy(this.camText(), 't-copy-cam'));
     $('t-reset').addEventListener('click', () => {
       resetTune();
       this.syncInputs();
@@ -156,11 +221,37 @@ export class Tuner {
     ].join('\n');
   }
 
-  async copy() {
-    const t = this.text();
+  /** Just the camera placement, so it can be pasted back over the block in tuning.js. */
+  camText() {
+    const pad = (s) => String(s).padEnd(12);   // 12, not 10 — 'camDuckFwd' is 10 on the nose
+                                               // and ran straight into its own value
+    const net = netLeadDeg(TUNE.camLead);
+    return [
+      'CAMERA  (mouth-mount POV)',
+      `  ${pad('camEye')}${TUNE.camEye.toFixed(2)} m`,
+      `  ${pad('camAhead')}${TUNE.camAhead.toFixed(2)} m`,
+      `  ${pad('camSide')}${TUNE.camSide.toFixed(2)} m`,
+      `  ${pad('camPitch')}${TUNE.camPitch.toFixed(2)} rad -> ${(TUNE.camPitch * DEG).toFixed(0)} deg nose-down`,
+      `  ${pad('camFov')}${TUNE.camFov.toFixed(0)}       -> deg vertical, before the speed stretch`,
+      `  ${pad('camWall')}${TUNE.camWall.toFixed(2)} m   -> ${(Math.atan2(TUNE.camWall, POV_AIM) * DEG).toFixed(0)} deg toward the face`,
+      `  ${pad('camRoll')}${TUNE.camRoll.toFixed(2)}x    -> of the rider's own lean, into the turn`,
+      `  ${pad('camWalk')}${TUNE.camWalk.toFixed(2)}x    -> of the stance walk`,
+      `  ${pad('camDuck')}${TUNE.camDuck.toFixed(2)} m`,
+      `  ${pad('camDuckFwd')}${TUNE.camDuckFwd.toFixed(2)} m`,
+      `  ${pad('camLead')}${TUNE.camLead.toFixed(2)}     -> ${net < 0.5 ? 'no lead' : net.toFixed(0) + ' deg lead'} on a snap`,
+      'CAMERA  (chase)',
+      `  ${pad('camBack')}${TUNE.camBack.toFixed(1)} m`,
+      `  ${pad('camHigh')}${TUNE.camHigh.toFixed(1)} m`,
+      '',
+      JSON.stringify(Object.fromEntries(CAM_KEYS.map((k) => [k, +TUNE[k].toFixed(3)]))),
+    ].join('\n');
+  }
+
+  async copy(text, btn = 't-copy') {
+    const t = text || this.text();
     try {
       await navigator.clipboard.writeText(t);
-      this.flash('COPIED');
+      this.flash('COPIED', btn);
     } catch {
       // the clipboard API needs a secure context; fall back to a selectable textarea
       const ta = document.createElement('textarea');
@@ -171,12 +262,12 @@ export class Tuner {
       let ok = false;
       try { ok = document.execCommand('copy'); } catch { ok = false; }
       ta.remove();
-      this.flash(ok ? 'COPIED' : 'COPY FAILED');
+      this.flash(ok ? 'COPIED' : 'COPY FAILED', btn);
     }
   }
 
-  flash(msg) {
-    const b = $('t-copy');
+  flash(msg, btn = 't-copy') {
+    const b = $(btn);
     const old = b.dataset.label || b.textContent;
     b.dataset.label = old;
     b.textContent = msg;

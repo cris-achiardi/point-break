@@ -22,6 +22,41 @@ export const DEFAULTS = {
   gravity: 1.25,   // how much speed the drop down the face hands you
   turnDrive: 1.40, // speed a turn GENERATES — grows with the square of how hard you turn
   railDrag: 0.055, // what a turn costs; low means a long carve holds its speed
+
+  /*
+   * THE CAMERA. The first block places the mouth-mount POV — a GoPro on the rider's head, so
+   * it walks the deck with their stance and ducks and pitches with their compression. These
+   * are dialled-in values off the tuner, not derived ones; drag them with TAB and hit
+   * COPY CAM to produce a replacement block.
+   *
+   * Note camEye sits a little ABOVE Rider's own head (its box stack is root .07 + body .06 +
+   * torso .54 + head .60 = 1.27), and camAhead pushes the lens most of the way to the nose.
+   * Both are deliberate — it is a mount on a stalk, not an eyeball.
+   */
+  camEye: 1.24,    // lens height above the water under the board
+  camAhead: 1.07,  // how far out in front of the face the mount sits
+  camSide: -0.30,  // lateral offset, +ve to the rider's right (which is toward the wall)
+  camPitch: 0.49,  // radians of nose-down. THIS is what decides how much board is in shot.
+  /*
+   * Vertical lens angle in degrees, before the speed stretch. Wide is not free: it is what
+   * decides how much board camPitch has to buy. Go wide and the board climbs into frame on
+   * its own, so back camPitch off or you will be staring at your own feet.
+   */
+  camFov: 80,
+  camWall: 3.00,   // seaward bias on the aim — how hard the view is turned into the face
+  camWalk: 2.20,   // how much of the rider's stance walk the mount inherits (1 = bolted on)
+  camDuck: 0.15,   // lens dropped by a full compression
+  camDuckFwd: 0.47, // ...and thrown forward by it, tracking how the torso pitches over
+  /*
+   * Roll into the turn, as a fraction of the rider's own lean. Reading it off surfer.lean is
+   * what keeps the head and the body rolling the same way — see the note in camera.js. The
+   * head does not lay over as far as the board does (you stand up against the rail), so this
+   * wants to stay well under 1.
+   */
+  camRoll: 0.57,
+  camLead: 0.77,   // how far the head looks AHEAD of the board through a turn
+  camBack: 2.00,   // chase only: distance behind the rider
+  camHigh: 2.00,   // chase only: height above them
 };
 
 export const TUNE = { ...DEFAULTS };

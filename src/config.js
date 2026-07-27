@@ -204,7 +204,7 @@ export const CFG = {
     levels: 26,           // colour steps per channel after dithering
     fogNear: 55,
     fogFar: 420,
-    fov: 64,
+    // the base lens angle is live — see TUNE.camFov. This is only the speed stretch on top.
     fovSpeed: 0.42,
     far: 1400,
   },

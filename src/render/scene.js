@@ -6,6 +6,15 @@ import * as THREE from 'three';
 import { CFG } from '../config.js';
 import { mulberry32 } from '../rng.js';
 
+/*
+ * Where the undisturbed sea sits, relative to the wave model's datum (the trough, at y = 0).
+ * The mean is low enough that the ambient swell riding on it can never reach the datum, so the
+ * open-ocean plane can never draw over the wave, the rider or the board. Keep
+ * OCEAN_Y + OCEAN_SWELL comfortably negative if you retune these.
+ */
+export const OCEAN_Y = -0.62;
+const OCEAN_SWELL = [0.10, 0.08, 0.18];   // sums to 0.36, so the crests top out at -0.26
+
 export const SKY_TOP = 0x123a6b;
 export const SKY_MID = 0x3f86c9;
 export const SKY_LOW = 0xf2b878;
@@ -79,14 +88,21 @@ export function buildScene(wave) {
   rim.position.set(0.8, 0.25, -0.5).normalize();
   scene.add(rim);
 
-  /* ---- open ocean ---- */
+  /* ---- open ocean ----
+   * This plane is 1500 m across and anchored to the camera, so it passes UNDER the wave mesh
+   * everywhere. The wave model's datum is its trough at y = 0 and nothing on the wave sits
+   * below that, so the undisturbed sea has to stay strictly below it too. It used to sit at
+   * -0.22 with 1.33 m of swell on it, which put its crests a metre OVER the trough — the flat
+   * plane then drew across the base of the face and over the rider, and when a crest rolled
+   * between the chase camera and the board it filled the frame and read as going underwater.
+   */
   const N = 44, SPAN = 1500;
   const og = new THREE.PlaneGeometry(SPAN, SPAN, N, N).rotateX(-Math.PI / 2);
   const oceanBase = og.attributes.position.array.slice();
   const ocean = new THREE.Mesh(og, new THREE.MeshLambertMaterial({
     color: 0x11526b, flatShading: true,
   }));
-  ocean.position.y = -0.22;
+  ocean.position.y = OCEAN_Y;
   ocean.frustumCulled = false;
   scene.add(ocean);
 
@@ -185,9 +201,9 @@ export function followWorld(world, camPos, t) {
   const base = world.oceanBase;
   for (let i = 0; i < p.count; i++) {
     const x = base[i * 3] + gx, z = base[i * 3 + 2] + gz;
-    p.array[i * 3 + 1] = Math.sin(x * 0.035 + t * 0.9) * 0.35
-      + Math.sin(z * 0.052 - t * 1.25) * 0.28
-      + Math.sin((x + z) * 0.011 + t * 0.4) * 0.7;
+    p.array[i * 3 + 1] = Math.sin(x * 0.035 + t * 0.9) * OCEAN_SWELL[0]
+      + Math.sin(z * 0.052 - t * 1.25) * OCEAN_SWELL[1]
+      + Math.sin((x + z) * 0.011 + t * 0.4) * OCEAN_SWELL[2];
   }
   p.needsUpdate = true;
 }
