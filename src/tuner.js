@@ -23,6 +23,7 @@ const ROWS = [
   { g: 'SWELL', key: 'period', label: 'PERIOD', min: 6, max: 20, step: 0.5, fmt: (v) => v.toFixed(1) + ' s', rebuild: true },
   { g: 'SWELL', key: 'swell', label: 'ANGLE', min: 0.05, max: 0.80, step: 0.01, fmt: (v) => (v * 57.3).toFixed(0) + '°', rebuild: true },
   { g: 'SWELL', key: 'peel', label: 'PEEL TRIM', min: 0.55, max: 1.80, step: 0.01, fmt: (v) => v.toFixed(2) + '×', rebuild: true },
+  { g: 'SWELL', key: 'peelScale', label: 'PEEL SPEED', min: 0.00, max: 1.50, step: 0.05, fmt: (v) => v < 0.05 ? 'closeout' : v.toFixed(2) + '×' },
   { g: 'SWELL', key: 'length', label: 'RUN', min: 120, max: 600, step: 5, fmt: (v) => v.toFixed(0) + ' m', rebuild: true },
 
   { g: 'BOARD', key: 'boardLen', label: 'LENGTH', min: 1.70, max: 3.00, step: 0.01, fmt: (v) => v.toFixed(2) + ' m' },
@@ -41,6 +42,7 @@ const HINTS = {
   period: 'swell period — longer means more power and more barrel',
   swell: 'deep-water approach angle',
   peel: 'trim on the resulting peel angle',
+  peelScale: 'how fast the curl runs down the line — 0 is a closeout you can take straight in',
   boardLen: 'longer glides and draws wider arcs',
   finPos: 'back = drivey and pivots hard, forward = loose',
   trim: 'nose-up angle at neutral stance — moves the sweet spot',

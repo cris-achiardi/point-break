@@ -107,14 +107,13 @@ function frame(now) {
     acc -= FIXED;
   }
 
-  surfer.surface(sf);
   const t = surfer.time;
+  wave.setAdvance(t);              // march the crest shoreward before anything reads frame()
+  surfer.surface(sf);
 
   /* --- events --------------------------------------------------------- */
   for (const ev of surfer.events) {
     if (ev.kind === 'tube') audio.blip(880, 0.3, 0.2);
-    else if (ev.kind === 'bounce') { audio.hit(240, 0.45, 0.42, 0.7); audio.blip(600, 0.2, 0.16); }
-    else if (ev.kind === 'air' || ev.kind === 'land') audio.blip(1040, 0.22, 0.18);
     else audio.blip(ev.kind === 'snap' ? 720 : 520, 0.14, 0.13);
   }
 
@@ -126,7 +125,7 @@ function frame(now) {
   rider.visible = true;
   if (surfer.alive) {
     rider.setBoard(TUNE.boardLen, TUNE.finPos);
-    rider.update(sf, surfer.psi, surfer.lean, surfer.crouch, surfer.airY, surfer.w, surfer.tailPush);
+    rider.update(sf, surfer.psi, surfer.lean, surfer.crouch, 0, surfer.w, surfer.tailPush);
   } else {
     rider.wipeout(surfer.tumble);
   }
@@ -189,6 +188,7 @@ function renderIdle() {
   idleT += 0.016;
   const s = 40 + idleT * 4;
   const b = s - 6;
+  wave.setAdvance(0);              // attract shot: peel only, no shoreward march
   waveMesh.update(s, b, idleT);
   const f = wave.frame(s);
   const y = 1.6 + Math.sin(idleT * 0.3) * 0.4;

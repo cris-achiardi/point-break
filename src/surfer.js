@@ -1,85 +1,86 @@
 /**
- * Rider physics, in wave coordinates.
+ * Rider physics — a FREE BODY IN THE WORLD.
  *
- * State is (s, u, spd, psi): where you are along the line, how high up the face, how fast,
- * and which way the board points. psi = 0 is straight down the line at the shoulder,
- * positive is angled up toward the lip, negative is angled down toward the trough.
+ * State is (x, z, spd, psi): a world position on the ocean, a speed, and a heading. psi is
+ * measured against the local wave frame — 0 is along the line toward the shoulder, positive
+ * angles up toward the lip, negative drops down the face toward the trough — but the surfer
+ * is NOT pinned to the wave. Every frame it reads whatever water surface is under its world
+ * position (wave.field): the steep pocket, the soft shoulder, the flat inside, or the back
+ * of the wave once you run over the top. The wave drifts and peels underneath you.
  *
- * Speed comes from two places and that is the whole game:
- *   1. gravity  -G sin(beta) sin(psi)  — you gain dropping, you pay climbing
- *   2. the pocket, which only pushes you if you are actually in it
- * Drag takes it all back, and turning hard takes it back faster.
+ * There is no way to "finish". You cannot wipe out, get kicked off, drown, or ride it to the
+ * sand — the run only ends when you restart it. The whole skill is keeping the board in the
+ * pocket while the pocket moves through the world.
+ *
+ * Speed comes from where you are, not from holding a key:
+ *   1. gravity down the face  — you gain dropping in, you pay climbing to the lip
+ *   2. the pocket, which only pushes where the wave is actually standing up and throwing
+ * Drag takes it back, turning hard takes it back faster, and off the wave there is nothing
+ * to plane on so you simply bog until you work your way back onto the face.
  */
 import { CFG } from './config.js';
 import { TUNE } from './tuning.js';
-import { column, colBeta, colL, colApexU, colAt } from './wave.js';
+import { column, colBeta, colApexU, colAt, pocketPower } from './wave.js';
 import { clamp, clamp01, lerp, approach, smoothstep, wrapPi } from './rng.js';
 
 const P = CFG.phys;
-const WV = CFG.wave;
 const K = CFG.pocket;
 const S = CFG.score;
 
-export const STATE = { RIDING: 0, AIR: 1, WIPEOUT: 2, KICKOUT: 3, FINISHED: 4 };
+// State is kept for the renderer/HUD, but the surfer is only ever RIDING now — nothing ends
+// the run. The other values remain so older callers that reference them still resolve.
+export const STATE = { RIDING: 0, WIPEOUT: 2, KICKOUT: 3, FINISHED: 4 };
 
-/**
- * How much of the wave's energy reaches you at d metres ahead of the curl.
- *
- * Behind the curl this has to reach exactly 1.0 at d=0 to meet the plateau in front of it.
- * A flat 0.7 ceiling there put a 30% step in the main propulsion term at precisely the
- * line you cross most often when riding deep, which reads as an invisible lurch. The
- * `0.7 + 0.3*fade` shaping keeps the intent — the foam gives you less — while landing on
- * 1.0 at the curl itself.
- */
-export function pocketPower(d, shoulder = 1) {
-  if (d < 0) {
-    const fade = clamp01(1 + d / K.behindFade);
-    return fade * (0.7 + 0.3 * fade);
-  }
-  const peak = K.peakEnd * shoulder;
-  if (d <= peak) return 1;
-  return Math.exp(-Math.pow((d - peak) / (K.tail * shoulder), K.tailExp));
-}
+export { pocketPower };
 
 export class Surfer {
   constructor(wave) {
     this.wave = wave;
+    this._field = {};
+    this._srf = {};
     this.reset();
   }
 
   reset() {
     const R = CFG.ride;
+
+    this.b = R.startB;         // break point (curl) along the crest
+    this.time = 0;
+    this._sGuess = R.startS;
+
+    // Establish the starting world position on the face from the old (s, u, psi) takeoff.
+    const sh = this.wave.shape(R.startS, this.b, 0, {});
+    column(sh.phi, sh.A);
+    const f = this.wave.frame(R.startS);
+    const p = colAt(R.startU);
+    this.x = f.x + f.nx * p.run;
+    this.z = f.z + f.nz * p.run;
     this.s = R.startS;
     this.u = R.startU;
+
     this.spd = R.startSpd;
-    this.psi = R.startPsi;
-    this.w = 0;            // weight: +1 forward/drive, -1 back/brake
+    this.psi = R.startPsi;     // heading, relative to the local wave frame
+
+    this.w = 0;                // stance: +1 forward/drive, -1 back/brake
     this.turnRate = 0;
     this.tailPush = 0;
     this.lean = 0;
     this.crouch = 0;
+    this.walking = 0;
 
-    this.b = R.startB;     // break point
     this.d = this.s - this.b;
     this.pocket = 0;
     this.vWater = 0;
     this.closing = 0;
     this.peel = 0;
-    this.walking = 0;
     this.stanceOpt = 0;
     this.trimErr = 0;
     this.alpha = 0;
+    this.onFace = 1;
+
     this.state = STATE.RIDING;
-    this.time = 0;
     this.foamT = 0;
-    this._bounceCd = 0;
     this._shoulder = 1;
-    this.shoulderT = 0;
-    this.airT = 0;
-    this.airY = 0;
-    this.airVy = 0;
-    this.airOut = 0;    // how far the lip has thrown you shoreward, metres
-    this.airOutV = 0;
     this.tumble = 0;
 
     this.barreled = false;
@@ -101,346 +102,244 @@ export class Surfer {
     this._swingDir = 0;
     this._swingPeak = 0;
 
-    this.events = [];      // { text, kind } consumed by the HUD/audio each frame
-    this.shape = {};
+    this.events = [];
     this.endReason = '';
   }
 
+  push(text, kind) { this.events.push({ text, kind }); }
+
   /** Sample everything the renderer and camera need about the surface under the board. */
   surface(out) {
-    const sh = this.wave.shape(this.s, this.b, this.time, this.shape);
-    column(sh.phi, sh.A);
-    const f = this.wave.frame(this.s);
-    const p = colAt(this.u);
-    const beta = colBeta(this.u);
-    const cb = Math.cos(beta), sb = Math.sin(beta);
+    const fd = this.wave.field(this.x, this.z, this.time, this.b, this._sGuess, this._srf);
+    this._sGuess = fd.s;
+    const cb = Math.cos(fd.beta), sb = Math.sin(fd.beta);
 
-    const run = p.run - this.airOut;      // the lip throws you toward the beach
-    out.px = f.x + f.nx * run;
-    out.py = p.ht + this.airY;
-    out.pz = f.z + f.nz * run;
+    out.px = this.x;
+    out.py = fd.y;
+    out.pz = this.z;
 
     // up-the-face direction on the surface
-    out.ux = f.nx * cb; out.uy = sb; out.uz = f.nz * cb;
+    out.ux = fd.nx * cb; out.uy = sb; out.uz = fd.nz * cb;
     // along the line
-    out.tx = f.tx; out.ty = 0; out.tz = f.tz;
-    // outward surface normal = uface x t  (see the handedness note in Wave.frame)
+    out.tx = fd.tx; out.ty = 0; out.tz = fd.tz;
+    // outward surface normal = uface x t
     let nx = out.uy * out.tz - out.uz * out.ty;
     let ny = out.uz * out.tx - out.ux * out.tz;
     let nz = out.ux * out.ty - out.uy * out.tx;
     const il = 1 / (Math.hypot(nx, ny, nz) || 1);
     out.nx = nx * il; out.ny = ny * il; out.nz = nz * il;
 
-    out.beta = beta;
-    out.A = sh.A;
-    out.phi = sh.phi;
+    out.beta = fd.beta;
+    out.A = fd.A;
+    out.phi = fd.phi;
     return out;
   }
 
-  push(text, kind) { this.events.push({ text, kind }); }
-
   step(dt, input) {
-    if (this.state === STATE.WIPEOUT || this.state === STATE.FINISHED) {
-      this.tumble += dt;
-      this.time += dt;
-      return;
-    }
-
     const wave = this.wave;
     this.time += dt;
 
     /*
-     * Stance. -1 is back over the fins, +1 is forward toward the nose. This is a POSITION
-     * you walk to and leave, not a spring-loaded lean — you are trimming the board, and a
-     * board does not un-trim itself because you stopped pushing. Small shifts are weight;
-     * past `stepAt` you are actually walking up and down the deck.
+     * Stance. -1 is back over the fins, +1 is forward toward the nose. A position you walk
+     * to and leave, not a spring — you are trimming the board.
      */
     this.w = clamp(this.w + input.weight * P.stanceRate * dt, -1, 1);
     this.walking = Math.max(0, (Math.abs(this.w) - P.stepAt) / (1 - P.stepAt));
     const brake = Math.max(0, -this.w);
     const drive = Math.max(0, this.w);
 
-    /* -- local wave shape ------------------------------------------------ */
-    const sh = wave.shape(this.s, this.b, this.time, this.shape);
-    column(sh.phi, sh.A);
-    const L = colL();
-    const beta = colBeta(this.u);
-    this.d = this.s - this.b;
-    const pw = pocketPower(this.d, sh.shoulder);
+    /* -- read the water under you --------------------------------------- */
+    const fd = wave.field(this.x, this.z, this.time, this.b, this._sGuess, this._field);
+    this._sGuess = fd.s;
+    this.s = fd.s;
+    this.u = fd.u;
+    this.d = fd.d;
+    this.onFace = fd.onFace;
+    const beta = fd.beta;
+    const onFace = fd.onFace;
+    const pw = fd.pocket * onFace;          // no pocket power once you are off the face
     this.pocket = pw;
-    this._shoulder = sh.shoulder;
+    this._shoulder = fd.shoulder;
+
+    // heading, resolved against the local frame: cp along the line, sp up the face
+    const cp = Math.cos(this.psi), sp = Math.sin(this.psi);
+    // world heading unit vector — this is the direction the board actually travels
+    let hx = fd.tx * cp + fd.nx * sp;
+    let hz = fd.tz * cp + fd.nz * sp;
+    const hl = 1 / (Math.hypot(hx, hz) || 1); hx *= hl; hz *= hl;
 
     /*
-     * The face is not a static ramp — it is water moving. Orbital motion carries it UP the
-     * face, fastest near the lip and near the curl, and it falls away down in the trough.
-     * That flow is why you can climb without dying, why the rail still bites when the board
-     * itself is slow in the pocket, and why the fast line is mid-face rather than at the lip.
+     * The face is moving water: orbital flow carries it UP the face near the lip and drops
+     * away in the trough. Only exists on the face itself.
      */
-    const faceFlow = P.waterUp * pw * sh.steep;
-    const vUp = faceFlow * (this.u - P.liftZero) / (1 - P.liftZero);
+    const faceFlow = P.waterUp * pw * fd.steep;
+    const vUp = faceFlow * (clamp01(this.u) - P.liftZero) / (1 - P.liftZero);
 
-    /*
-     * SPEED THROUGH THE WATER, which is not the same as speed along the line.
-     *
-     * `spd` is velocity in the WAVE's frame — how fast you move across a face that is
-     * itself travelling shoreward. Sitting still in that frame does not mean sitting still
-     * in the water: you are being carried to the beach at the wave's own speed, planing
-     * down a slope that regenerates under you. This is the rolling-downhill part, and it
-     * is why trimming to match the peel leaves you with plenty of speed to turn on rather
-     * than none. Everything hydrodynamic — lift, fin bite, turn radius, drag — runs off
-     * this, while `spd` alone decides whether you gain or lose ground on the curl.
-     */
-    // Holding station on the curl means tracking a depth contour, which along the
-    // SHORELINE is c / sin(crest angle) — real ground speed even when you are not gaining
-    // an inch on the peel. That is the floor under your speed through the water.
-    const carry = P.carryFrac * (sh.c / Math.max(0.30, Math.sin(sh.pa)))
-      * (0.35 + 0.65 * sh.stand);
+    // ground speed floor from holding station on a moving wave (only while on the face)
+    const carry = P.carryFrac * (fd.c / Math.max(0.30, Math.sin(fd.pa)))
+      * (0.35 + 0.65 * fd.stand) * onFace;
     this.vWater = Math.hypot(this.spd, carry);
     const vw = this.vWater;
 
-    /* -- steering ---------------------------------------------------------
-     * The pivot is the fins at the tail. Weight back loads them and the board swings;
-     * weight forward puts you on the rail and draws the arc out long. Crucially the board
-     * then HOLDS that line — gravity barely re-aims it, so where you point is where you go.
-     */
+    /* -- steering -------------------------------------------------------- */
     const grip = 1 / (1 + vw / P.turnSpdRef);
-    // A rail carve is a radius: omega = g tan(lean) / v, so it slows down as you speed up.
-    // A pivot off the buried fins is a rotation about the tail and barely cares about speed
-    // — which is exactly why you drop your weight back to get the board round quickly.
-    /*
-     * A rail only bites if water is flowing over it. Crank a hard turn with no speed and
-     * in real life you bog and fall in; here the authority simply is not there, so it
-     * resolves itself without asking the player to manage yet another axis.
-     */
-    /*
-     * Board geometry decides how much your stance is worth. A longer board draws wider
-     * arcs; fins set further back give the tail more leverage, so stepping back swings it
-     * harder. Fins forward is a looser, slidier board that neither holds nor drives as well.
-     */
     const lenR = TUNE.boardLen / P.boardRefLen;
     const finLever = P.finLeverBase + P.finLeverGain * TUNE.finPos;
-
-    /*
-     * Stamping the tail (space) is the hard-turn input, but you can only push on a tail you
-     * are standing near. Walk to the nose and there is no leverage left — the board just
-     * keeps trimming. That coupling is the whole reason stance is a position you commit to.
-     */
     const tailLev = clamp01(P.tailLevBase + P.tailLevGain * (P.tailLevPivot - this.w));
     this.tailPush = approach(this.tailPush, (input.tail || 0) * tailLev, 12, dt);
 
     const flow = clamp01((vw + faceFlow * 0.45) / P.railFlow);
     const carve = P.turnBase * (1 - P.turnDriveDamp * drive) * grip * (0.20 + 0.80 * flow) / lenR;
-    // a longer board has more swing weight, so even a fins pivot comes round slower
     const pivot = P.turnPivot * this.tailPush * (0.35 + 0.65 * flow) * finLever / Math.sqrt(lenR);
     let dpsi = input.steer * (carve + pivot);
-    // gravity nudges the nose downhill, but only in the normal riding range — past ~80 deg
-    // this term would push you further into the reverse, which is not how a board behaves
+    // gravity gently drops the nose down the face when you are just riding along
     if (Math.abs(this.psi) < P.gravTurnTo) {
-      dpsi -= P.gravTurn * Math.sin(beta) * Math.cos(this.psi) * clamp01(this.spd / 6);
+      dpsi -= P.gravTurn * Math.sin(beta) * Math.cos(this.psi) * clamp01(this.spd / 6) * onFace;
     }
     this.turnRate = approach(this.turnRate, dpsi, 12, dt);
-    /*
-     * Heading is a real angle with no clamp. That matters: psi between 90 and 180 deg is
-     * still CLIMBING while pointed back up the line, so a cutback only comes back down the
-     * face once the arc carries past 180. Clamping short of that makes the manoeuvre
-     * geometrically impossible. Holding the turn all the way round is a roundhouse, and it
-     * pays for itself in rail drag.
-     */
     this.psi = wrapPi(this.psi + this.turnRate * dt);
 
-    const sp = Math.sin(this.psi), cp = Math.cos(this.psi);
-
-    /* -- longitudinal forces ---------------------------------------------
-     * Push is purely positional: how close to the curl (pw), how high on the face
-     * (faceBand), and how stood-up the wave actually is there (steep). Weight never adds
-     * thrust — it only changes how much drag the board makes.
-     */
-    /*
-     * Gravity pulls you down the face; the face itself is rising under you. High on the
-     * wave the water lifts (climbing is cheap, which is how you reach the lip with speed
-     * still on); down in the trough it drops away (which is what loads a bottom turn).
-     */
+    /* -- longitudinal forces --------------------------------------------- */
+    // gravity along the surface: down the face on the wave, off the back once you go over.
     const lift = P.liftGain * vUp;
-    const aGrav = (-P.G * TUNE.gravity * Math.sin(beta) + lift) * sp;
+    const aGrav = (P.G * TUNE.gravity * fd.slopeSeaward + lift) * sp;
 
-    const faceBand = Math.exp(-Math.pow((this.u - K.faceCenter) / K.faceWidth, 2));
-    const shapePow = 1 - P.pushSteep + P.pushSteep * sh.steep;
+    const faceBand = Math.exp(-Math.pow((clamp01(this.u) - K.faceCenter) / K.faceWidth, 2));
+    const shapePow = 1 - P.pushSteep + P.pushSteep * fd.steep;
     const aPush = P.push * pw * faceBand * shapePow;
     const aPump = P.pumpGain * drive * Math.max(0, -sp) * pw * faceBand;
 
     /*
-     * Turning MAKES speed. Redirecting the board against the face is how a surfer generates
-     * drive, and it goes as roughly the square of how hard you turn — so a long drawn carve
-     * roughly holds what it has, while a hard committed turn pumps you up the line. It only
-     * works where there is energy to redirect (in the pocket, on the face, with flow over
-     * the rail), and it saturates, so you cannot just spin for free speed.
+     * The wave is a MOVING hill. It advances shoreward under you at its celerity, so the face
+     * is a downhill that never runs out — a treadmill. Rather than a one-off drop, it carries
+     * your speed UP toward a cruising speed set by how fast the wave is moving, along the
+     * whole standing face (not just the curl). That is why a 2 m face still bombs you along
+     * the whole way in. You can still beat this floor by pumping and dropping; it only ever
+     * pulls you up, never brakes you.
      */
-    const om = Math.abs(this.turnRate);
-    const bite = P.finBiteBase + P.finBiteGain * TUNE.finPos;   // loose tail generates less
-    const aTurn = Math.min(P.turnDriveMax, TUNE.turnDrive * om * om * pw * faceBand * flow)
-      * bite * clamp01(1 - vw / P.turnDriveCeil);
+    // The steeper the moving face, the faster the downhill it presents. A hollow section
+    // bombs you; a fat, gentle section carries far less — so you lose speed on the fat bits
+    // and have to point down and keep the board planing to hold what you have. `phi` is the
+    // actual face steepness (fat ~0.4, vertical/hollow ~1.6+).
+    const faceSteep = clamp01((fd.phi - 0.35) / 1.15);
+    // The effective up-flow is strongest on the upper-mid face and dies in the trough, so the
+    // FAST line is high and the trough is the slow zone (Surf Simply / Landell-Mills). That is
+    // what makes the roller-coaster line pay: drop for speed off gravity, then carry it high.
+    const height = clamp01((this.u + 0.08) / 0.6);              // ~0 at the trough, 1 up high
+    const onWall = (0.15 + 0.85 * height) * fd.stand;
+    const vGlide = P.waveGlide * fd.c * (0.2 + 0.8 * faceSteep) * onWall;
+    const aWave = Math.max(0, vGlide - this.spd) * P.waveGrab;
 
     /*
-     * Weight forward levels the board and it planes; weight back sinks the tail. But
-     * sinking the tail is only a BRAKE when you are going straight — do it mid-turn and
-     * you are loading the fins, which is what drives the turn rather than what stops you.
-     * Without this the brake fights the turn drive and a hard turn nets nothing.
+     * Turning MAKES speed by redirecting the rising water. A hard bottom turn banks the board
+     * against the up-flow at ~90 deg and converts it to thrust, so you come out FASTER than
+     * you went in (Surf Simply / Landell-Mills). Gated by the up-flow energy (pocket * steep)
+     * rather than a mid-face band, so it works low on the face where the bottom turn happens.
      */
-    /*
-     * Trim. Where you stand sets the board's attack angle; speed sets the angle you
-     * actually need to stay up. Drag is the mismatch, in both directions — dragging the
-     * tail on one side, burying the nose on the other. There is no "more forward is always
-     * faster", which is what made the stance feel overpowered.
-     */
+    const om = Math.abs(this.turnRate);
+    const bite = P.finBiteBase + P.finBiteGain * TUNE.finPos;
+    const upFlow = pw * (0.35 + 0.65 * fd.steep);
+    const aTurn = Math.min(P.turnDriveMax, TUNE.turnDrive * P.btGain * om * om * upFlow * flow)
+      * bite * clamp01(1 - vw / P.turnDriveCeil);
+
     const alpha = TUNE.trim - P.trimStance * this.w;
     const alphaReq = Math.sqrt(P.liftNeed / (Math.max(6, vw * vw) * lenR));
     this.alpha = alpha;
     this.trimErr = alpha - alphaReq;
-    // where you'd have to be standing right now for a perfect trim — shown on the HUD so
-    // the sweet spot is something you can read and chase, not guess at
     this.stanceOpt = clamp((TUNE.trim - alphaReq) / P.trimStance, -1, 1);
     const over = Math.max(0, this.trimErr) * (1 - P.trimTurnRelief * clamp01(om / 1.6));
     const under = Math.max(0, -this.trimErr);
     const plane = P.planeBase + P.trimOver * over + P.trimUnder * under * (1 + 4 * under);
-    // stamping the tail digs the rail just as much as standing back on it does
     const dig = Math.max(brake, this.tailPush);
     const railBite = (P.railDrive + (P.railBrake - P.railDrive) * dig) * bite;
-    // ...and more waterline also means it simply glides better
     const glide = P.dragLin * (1 - P.lenGlide * (lenR - 1));
     let aDrag = -plane * (glide * this.spd + P.dragQuad * vw * this.spd)
       - TUNE.railDrag * railBite * om * this.spd;
-    if (this.u < P.flatsFrom) aDrag -= P.dragFlats * this.spd * (P.flatsFrom - this.u) * 12;
+    // off the face — the back or the deep inside — there is no wall to plane on, so you bog
+    if (onFace < 0.5) aDrag -= P.dragLin * 3.0 * this.spd;
+    if (this.u < -0.2) aDrag -= P.dragLin * P.flatsGlide * this.spd;   // gliding the inside
 
-    this.spd = Math.max(0.4, this.spd + (aGrav + aPush + aPump + aTurn + aDrag) * dt);
+    this.spd = Math.max(0, this.spd + (aGrav + aPush + aPump + aTurn + aWave + aDrag) * dt);
     this.topSpd = Math.max(this.topSpd, this.vWater);
 
-    /* -- integrate position ---------------------------------------------- */
-    const ds = this.spd * cp * dt;
-    this.s += ds;
-    this.dist += Math.abs(ds);
-    this.u += (this.spd * sp * dt) / Math.max(L, 0.5);
+    /* -- integrate WORLD position ---------------------------------------- */
+    const ds = this.spd * dt;
+    this.x += hx * ds;
+    this.z += hz * ds;
+    this.dist += ds;
 
-    /* -- the break point chases you --------------------------------------
-     * How fast you are gaining on the curl, or losing to it. Board speed and progress down
-     * the line are NOT the same thing — on a cutback you have plenty of speed while moving
-     * backwards relative to the peel, and trimming so this reads zero is how you sit in
-     * one spot in a barrel.
+    /*
+     * The wave carries its water — and you — shoreward as it advances, so it does not simply
+     * wash past and leave you on the back. This is what catching a wave is: you travel WITH
+     * it, and your own board speed is what moves you AROUND on the face. It only holds while
+     * you are actually on the wave; run over the back (onFace = 0) and it lets go of you, so
+     * the wave rolls on without you and you have genuinely lost it.
      */
+    const carryStep = wave.driftSpeed * dt * onFace;
+    this.x += wave._advX * carryStep;
+    this.z += wave._advZ * carryStep;
+
+    /*
+     * The wave stands up under you and keeps lifting you back onto the face if you drop too
+     * low — an UPWARD-only push (+normal), the rising water of the moving wave. It never pulls
+     * you down, so it is not the old skid; it just stops a small face from dumping you off the
+     * base. Drive the nose down hard and your own motion still beats it, so you can dive off
+     * the bottom and head for the beach when you mean to.
+     */
+    if (this.u < P.wallCatch && onFace > 0.5) {
+      const catchUp = P.wallLift * fd.stand * (P.wallCatch - this.u);
+      this.x += fd.nx * catchUp * dt;
+      this.z += fd.nz * catchUp * dt;
+    }
+
+    /*
+     * Rail grip (Coanda). A rail set at speed grips the face and draws the board UP into the
+     * wave, letting you hold and climb a high line instead of sliding off it. It needs speed
+     * (nose-riding fails when slow) and eases off approaching the lip so it holds you on a
+     * high line rather than throwing you over the top. This is the rail gripping the water,
+     * not the fins.
+     */
+    if (onFace > 0.5) {
+      // draw up to a high trim line (or the apex, if the section barrels below it) and hold
+      // there — to go higher you have to aim the nose up; the grip alone will not throw you
+      // over the lip
+      const hi = Math.min(P.gripLine, colApexU());
+      const grip = P.railGrip * clamp01(vw / P.gripSpeed) * fd.stand
+        * clamp01((hi - this.u) / 0.4);
+      this.x += fd.nx * grip * dt;
+      this.z += fd.nz * grip * dt;
+    }
+
+    /*
+     * NB: no along-line "sweep" any more. The treadmill drive (aWave) gives you real speed
+     * down the line, so you keep pace with the peel under your own steam — outrun it onto the
+     * shoulder and the face flattens and slows you until the curl catches back up, fall
+     * behind and you bog in the foam. That balance settles you into the pocket on its own,
+     * and holding the fast line there is the skill. Where you sit UP the face is purely where
+     * the fins point (the heading integration above) — the board tracks, it does not skid.
+     */
+
+    /* -- the break point keeps peeling ----------------------------------- */
     const peel = wave.peelAt(this.b);
     this.closing = this.spd * cp - peel;
     this.peel = peel;
     this.b += peel * dt;
 
-    /* -- top and bottom of the face -------------------------------------- */
+    /* -- in the tube ----------------------------------------------------- */
     const apex = colApexU();
-    /*
-     * There is headroom above the lip line. You need it: an off-the-top or the top half of
-     * a cutback both carry you into the lip and back out, and gravity up there is steep
-     * enough to throw you down again on its own. Only past the ceiling does it resolve.
-     */
-    if (this.u > P.uCeil) {
-      // Only being deep, slow and under a throwing lip actually pitches you. Everything
-      // else at the top of the face is a recoverable mistake — you stall and drop back in.
-      const deep = this.d < 9 && sh.hollow > 0.4 && sh.stand > 0.6 && pw > 0.45;
-      /*
-       * How hard the lip is throwing right where you hit it. Meet a pitching lip at the
-       * curl and it launches you — that is the whole timing of an air: you propel yourself
-       * off the top and the lip throws you shoreward. Hit the same wave out on the soft
-       * shoulder and there is nothing there to bounce off.
-       */
-      const thrown = pw * (0.35 + 0.65 * sh.hollow)
-        * Math.exp(-Math.pow((this.d - WV.pitchAt) / (WV.pitchWidth * 1.6), 2));
-      if (this.spd > P.airMin && sp > 0.08 && cp > 0 && sh.A > 0.8) {
-        this.state = STATE.AIR;
-        this.airT = 0;
-        this.airVy = this.spd * sp * 0.55 + thrown * P.lipThrow;
-        this.airOutV = thrown * P.lipOut + this.spd * 0.12;
-        this.u = P.uCeil;
-        this.psi = Math.min(this.psi, 0.55);
-        this.push(thrown > 0.45 ? 'LAUNCHED' : 'AIR', 'air');
-      } else if (deep && this.spd < 5.0) {
-        this.state = STATE.WIPEOUT;
-        this.endReason = 'OVER THE FALLS';
-      } else if (sh.A < 0.9 || pw < 0.10) {
-        this.state = STATE.KICKOUT;
-        this.endReason = 'KICKED OUT OVER THE BACK';
-      } else {
-        /*
-         * The lip deflects you back down the face. Negating psi flips the up-face component
-         * while KEEPING the along-line one, so a turn that carried you to the top comes
-         * back down still pointed the way you were going — which is precisely the second
-         * half of an off-the-top or a cutback, rather than a reset.
-         */
-        this.u = P.uCeil - 0.02;
-        this.psi = -this.psi;
-        this.spd *= 0.90;
-        this.push('OFF THE TOP', 'snap');
-      }
-    }
-    // digging in below the trough: level the board out in whichever direction you are going
-    if (this.u < P.uFloor) {
-      this.u = P.uFloor;
-      if (sp < 0) this.psi = wrapPi(this.psi + Math.min(1, -sp) * 3.2 * dt * (cp >= 0 ? 1 : -1));
-    }
-
-    /* -- in the tube ------------------------------------------------------ */
-    // How far the lip has thrown past you, as a fraction of the wave's own height — an
-    // absolute metre threshold never triggers on a small wave.
-    const lip = colAt(1).run;
-    const me = colAt(this.u).run;
-    const inTube = sh.phi > 1.75 && this.u < apex && this.u > 0.18
-      && lip < me - 0.10 * sh.A && pw > 0.25;
+    const inTube = onFace > 0.5 && fd.phi > 1.75 && this.u < apex && this.u > 0.18
+      && fd.hollow > 0.45 && pw > 0.25;
     if (inTube && !this.barreled) this.push('PITTED', 'tube');
     if (inTube) { this.barrelT += dt; this.sBarrel += S.barrelRate * dt * this.combo; }
     this.barreled = inTube;
 
-    /* -- the foam ---------------------------------------------------------
-     * Meeting the whitewater head-on off the back of a cutback is a manoeuvre, not a
-     * death: the foam is moving down the line and it kicks you back out onto the face.
-     * Drifting into it sideways or from behind is what drowns you.
-     */
-    this._bounceCd = Math.max(0, this._bounceCd - dt);
-    if (this.d < K.foamEnter) {
-      // "facing back up the line" has to be tested on the cosine — psi wraps, so a turn
-      // carried past 180 deg comes out as a large NEGATIVE angle, not a large positive one
-      if (cp < K.bounceCos && this.spd > K.bounceSpeed && this._bounceCd <= 0) {
-        this.psi = -0.50;
-        this.spd = clamp(this.spd * K.bounceKeep + K.bounceKick, 6.0, 14.0);
-        this.u = Math.min(this.u + 0.15, 0.90);
-        this.foamT = 0;
-        this._bounceCd = K.bounceCool;
-        this.sTurns += S.bounce * this.combo;
-        this.combo = Math.min(S.comboMax, this.combo + 0.4);
-        this.turnCount++;
-        this.push('FOAM BOUNCE', 'bounce');
-      } else {
-        this.foamT += dt * (1 - 0.45 * drive * clamp01(this.spd / 12));
-        if (this.foamT > K.foamGrace) {
-          this.state = STATE.WIPEOUT;
-          this.endReason = 'THE WAVE ATE YOU';
-        }
-      }
-    } else {
-      this.foamT = Math.max(0, this.foamT - dt * 1.8);
-    }
+    /* -- foam, for camera shake only — it cannot kill you any more -------- */
+    if (this.d < K.foamEnter && onFace > 0.5) this.foamT = Math.min(2, this.foamT + dt);
+    else this.foamT = Math.max(0, this.foamT - dt * 1.8);
 
-    if (this.d > K.lostShoulder * sh.shoulder && this.spd < K.lostSpeed) {
-      this.shoulderT += dt;
-      if (this.shoulderT > 1.6) {
-        this.state = STATE.KICKOUT;
-        this.endReason = 'BOGGED ON THE SHOULDER';
-      }
-    } else this.shoulderT = 0;
-
-    if (this.b > wave.endS + 90 || this.time > wave.duration * 1.8 + 20) {
-      this.state = STATE.FINISHED;
-      this.endReason = 'RODE IT TO THE SAND';
-    }
-
-    /* -- scoring ---------------------------------------------------------- */
+    /* -- scoring: reward being in the pocket ----------------------------- */
     this._scoreTurns(dt);
 
-    // holding a quiet, fast line in the pocket is the point of a Sunday midlength wave
     const trimming = pw > 0.5 && Math.abs(this.turnRate) < 0.28 && this.spd > 8 && this.u > 0.18;
     if (trimming) {
       this.trimT += dt;
@@ -459,16 +358,15 @@ export class Surfer {
     this.score = this.sPocket + this.sBarrel + this.sTurns + this.sSpeed + this.sTrim
       + this.dist * S.distRate;
 
-    /* -- cosmetics -------------------------------------------------------- */
+    /* -- cosmetics ------------------------------------------------------- */
     this.lean = approach(this.lean, clamp(-this.turnRate * 0.55, -0.85, 0.85), 9, dt);
-    this.crouch = approach(this.crouch, clamp01(brake * 0.8 + Math.abs(this.turnRate) * 0.35 + (1 - pw) * 0.1), 7, dt);
+    this.crouch = approach(this.crouch,
+      clamp01(brake * 0.8 + Math.abs(this.turnRate) * 0.35 + (1 - pw) * 0.1), 7, dt);
   }
 
   /** Reward a completed direction change: bigger swing + more speed kept = better. */
   _scoreTurns(dt) {
-    // use the rate, not a difference of wrapped angles, or every wrap reads as a huge swing
     const dp = this.turnRate * dt;
-    // how far round the arc got: |psi| near PI means fully reversed, pointing up the line
     this._swingPeak = Math.max(this._swingPeak, Math.abs(this.psi));
     const dir = Math.sign(dp);
     if (dir !== 0 && dir !== this._swingDir) {
@@ -477,8 +375,6 @@ export class Surfer {
         const fast = clamp01(this.spd / 15);
         const sharp = clamp01(Math.abs(this.turnRate) / 1.4);
         const back = this._swing > 0;
-        // the arc carried past 90 deg, so you genuinely came around and pointed back up
-        // the line at the curl. That is a cutback and nothing else.
         const cutback = back && this._swingPeak > 1.62;
         const gain = S.turnBase * amp * (0.45 + 0.85 * fast) * (cutback ? 1.6 : 1) * this.combo;
         this.sTurns += gain;
@@ -496,48 +392,11 @@ export class Surfer {
     this._swing += dp;
   }
 
-  /** Airborne: a short arc over the lip, land clean or eat it. */
-  stepAir(dt, input) {
-    this.time += dt;
-    this.airT += dt;
-    this.airVy -= 9.81 * dt * 0.7;
-    this.airY = Math.max(0, this.airY + this.airVy * dt);
-    this.airOut += this.airOutV * dt;
-    this.airOutV *= Math.max(0, 1 - 1.6 * dt);
-    this.s += this.spd * Math.cos(this.psi) * dt;
-    this.b += this.wave.peelAt(this.b) * dt;
-    this.d = this.s - this.b;
-    this.spd = Math.max(2, this.spd - 1.4 * dt);
-    this.w = clamp(this.w + input.weight * P.stanceRate * dt, -1, 1);
-    this.tailPush = approach(this.tailPush, 0, 6, dt);   // no fins in the water up here
-    // rotate the nose back down so you can stick it
-    this.psi = approach(this.psi, -0.55 + input.steer * 0.35, 2.4, dt);
-    this.lean = approach(this.lean, input.steer * 0.6, 6, dt);
-
-    if (this.airY <= 0.001 && this.airT > 0.12) {
-      const clean = this.psi < 0.1 && this.spd > 6 && pocketPower(this.d, this._shoulder) > 0.15;
-      if (clean) {
-        const gain = 120 * clamp01(this.airT / 0.9) * this.combo;
-        this.sTurns += gain;
-        this.combo = Math.min(S.comboMax, this.combo + 0.5);
-        this.push('STUCK IT', 'land');
-        this.state = STATE.RIDING;
-        this.u = 0.94;
-        this.spd *= 0.86;
-        this.airOut = 0; this.airOutV = 0;
-      } else {
-        this.state = STATE.WIPEOUT;
-        this.endReason = 'BLEW THE LANDING';
-      }
-      this.airOut = Math.max(0, this.airOut);
-    }
-  }
-
   update(dt, input) {
     this.events.length = 0;
-    if (this.state === STATE.AIR) this.stepAir(dt, input);
-    else this.step(dt, input);
+    this.step(dt, input);
   }
 
-  get alive() { return this.state === STATE.RIDING || this.state === STATE.AIR; }
+  /** The run never ends on its own any more — you free-roam until you restart. */
+  get alive() { return true; }
 }

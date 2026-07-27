@@ -24,9 +24,32 @@ export const CFG = {
      */
     push: 3.6,
     pushSteep: 0.65,      // fraction of push that depends on the face actually being steep
+    // The wave is a moving hill — a downhill that never runs out. Rather than a one-off drop,
+    // it carries your speed up toward a cruising speed set by how fast the wave itself moves,
+    // so a 2 m face still bombs you along. You can beat this floor with pumps and drops.
+    waveGlide: 2.6,       // cruising speed as a multiple of celerity (c ~ 5 m/s -> ~13 m/s)
+    waveGrab: 1.6,        // how hard the moving face pulls you up to that speed
+    // The wave stands up under you and keeps lifting you back onto the face if you drop too
+    // low — an UPWARD-only push (never a downward drag, so it is not the old skid), which is
+    // what keeps you on a small face instead of sliding off the base. Point the nose down
+    // hard and you still beat it and drive to the beach.
+    wallCatch: 0.30,      // below this height on the face the rising wave lifts you back up
+    wallLift: 5.0,        // how strongly
     pumpGain: 2.2,        // bonus for driving through the bottom of a turn
-    turnDriveMax: 7.2,    // ceiling on the drive a single turn can make
+    turnDriveMax: 9.5,    // ceiling on the drive a single turn can make
     turnDriveCeil: 18.0,  // ...and the speed past which turning stops adding anything
+    // A hard bottom turn redirects the rising water at ~90 deg and CONVERTS it to forward
+    // thrust — you come out of the turn faster than you went in. This lets turn-drive work
+    // low on the face (where you bottom-turn), not just mid-face.
+    btGain: 5.5,          // extra thrust from banking hard against the rising water
+
+    // RAIL GRIP (Coanda). A rail set at speed grips the face and draws the board UP into the
+    // wave, so you can hold and climb a high line rather than sliding off it. It needs speed
+    // — like nose-riding, it fails when slow — and eases off near the lip so it holds you on
+    // a high line instead of throwing you over. This is the rail, not the fins.
+    railGrip: 2.6,        // strength of the up-the-face grip
+    gripSpeed: 7.0,       // speed (m/s) at which the rail grips fully
+    gripLine: 0.72,       // the high trim line the grip draws you to (climb past it by aiming up)
 
     /*
      * The water in a wave face is MOVING, not static terrain. It rises up the face near the
@@ -38,6 +61,8 @@ export const CFG = {
     waterUp: 7.0,         // m/s the face is climbing near the lip, at full pocket
     liftGain: 1.30,       // that flow, as an acceleration on the board
     liftZero: 0.25,       // height on the face where the water neither rises nor falls
+
+    flatsGlide: 2.5,      // extra drag once you slide well past the trough onto the inside
 
     dragLin: 0.100,
     dragQuad: 0.0190,
@@ -67,7 +92,8 @@ export const CFG = {
     // BELOW the trough — the trough itself is where every bottom turn passes through.
     dragFlats: 0.42,
     flatsFrom: 0.02,      // u below which the flats penalty starts
-    uFloor: -0.09,        // you cannot slide further under the trough than this
+    uFloor: -0.35,        // a little give below the trough so a bottom turn is not hard-walled,
+                          // but not so far that you sink onto dead flat water and bog
 
     /*
      * Steering. The pivot is the fins, at the tail. Weight back loads them and the board
@@ -88,9 +114,6 @@ export const CFG = {
      * cutback: you are repositioning into the pocket, and you will run out of face into
      * the foam if you overdo it.
      */
-    airMin: 6.0,          // speed needed to carry off the top instead of just stalling
-    lipThrow: 4.2,        // extra vertical the pitching lip hands you
-    lipOut: 3.4,          // ...and how hard it throws you toward the beach
     uCeil: 1.14,          // headroom above the lip line to finish a turn and drop back in
 
     /*
@@ -156,13 +179,6 @@ export const CFG = {
     faceCenter: 0.45,
     faceWidth: 0.52,
 
-    // hitting the whitewater side-on off a cutback rebounds you instead of killing you
-    bounceCos: -0.25,     // cos(psi) below this means you are facing back into the foam
-    bounceSpeed: 3.0,
-    bounceKeep: 0.55,     // fraction of your speed carried through the bounce
-    bounceKick: 5.0,      // ...plus what the moving whitewater hands back to you
-    bounceCool: 0.9,
-
     // failure
     foamEnter: -1.5,
     foamGrace: 1.3,       // seconds you can survive inside the foam ball
@@ -175,7 +191,6 @@ export const CFG = {
     trimRate: 7,          // per second holding a quiet fast line
     barrelRate: 62,
     turnBase: 42,
-    bounce: 170,          // rebounding off the foam back into the pocket
     speedRate: 0.55,
     distRate: 0.5,
     comboStep: 0.22,      // multiplier gained per scoring event

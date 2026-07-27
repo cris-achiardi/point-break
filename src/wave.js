@@ -24,6 +24,21 @@ import {
 } from './bathymetry.js';
 
 const W = CFG.wave;
+const KP = CFG.pocket;
+
+/**
+ * How much of the wave's energy reaches you at d metres ahead of the curl. Behind the curl
+ * it fades into the foam; through the pocket it is full; out on the shoulder it tails off.
+ */
+export function pocketPower(d, shoulder = 1) {
+  if (d < 0) {
+    const fade = clamp01(1 + d / KP.behindFade);
+    return fade * (0.7 + 0.3 * fade);
+  }
+  const peak = KP.peakEnd * shoulder;
+  if (d <= peak) return 1;
+  return Math.exp(-Math.pow((d - peak) / (KP.tail * shoulder), KP.tailExp));
+}
 
 /* ------------------------------------------------------------------ profile column
  * Module-scope scratch: call column(phi, A) for a station, then query colAt/colBeta for
@@ -34,8 +49,18 @@ const _run = new Float32Array(PN + 1);
 const _ht = new Float32Array(PN + 1);
 let _phi = 0;
 let _L = 1;
+let _troughRun = 0;   // seaward offset of the trough, now that the LIP is the reference (< 0)
 
-/** Build the cross-section for one station. Returns arc length per unit u. */
+/**
+ * Build the cross-section for one station. Returns arc length per unit u.
+ *
+ * The seaward reference (run = 0) is the LIP, not the trough. A wave breaks along a straight
+ * crest line; what varies down the line is the STEEPNESS, and that moves the base of the wave
+ * closer to or further from that crest — a hollow section stands up so the trough tucks in
+ * under the lip (small run), a fat section slumps so the trough sits way out in front (large
+ * run). Anchoring at the lip keeps the crest straight and lets the trough travel, instead of
+ * the reverse (which made the whole wall look like it curved as you ran down the line).
+ */
 export function column(phi, A) {
   _phi = phi;
   const dt = 1 / PN;
@@ -49,11 +74,18 @@ export function column(phi, A) {
   }
   // scale the arc so the lip lands exactly A metres above the trough
   _L = h > 1e-3 ? A / h : A * 2;
-  for (let i = 0; i <= PN; i++) { _run[i] *= _L; _ht[i] *= _L; }
+  const lipRun = _run[PN] * _L;
+  for (let i = 0; i <= PN; i++) {
+    _ht[i] *= _L;
+    _run[i] = _run[i] * _L - lipRun;   // shift so the lip is at run = 0, trough at -lipRun
+  }
+  _troughRun = _run[0];
   return _L;
 }
 
 export const colL = () => _L;
+/** Seaward offset of the trough from the (straight) lip line — grows as the face fattens. */
+export const colTrough = () => _troughRun;
 
 /** Face tangent angle at height u — 0 is flat, PI/2 is a vertical wall, more is overhanging. */
 export const colBeta = (u) => _phi * Math.pow(clamp01(u), W.profE);
@@ -62,10 +94,27 @@ export const colBeta = (u) => _phi * Math.pow(clamp01(u), W.profE);
 export const colApexU = () =>
   _phi > Math.PI / 2 ? Math.pow(Math.PI / 2 / _phi, 1 / W.profE) : 1;
 
+/**
+ * Invert a seaward offset `run` back to a height u on the FRONT face. The run profile only
+ * increases monotonically up to the apex (where the face goes vertical), so we invert
+ * against that stretch; anything at or beyond it reads as the crest. Shoreward of the trough
+ * (run < 0) is the flat inside water. Requires column() to have been called first.
+ */
+export function uFromRun(run) {
+  const aU = colApexU();
+  const aIdx = Math.min(PN, Math.max(1, Math.round(aU * PN)));
+  if (run >= _run[aIdx]) return aU;                            // at or over the crest
+  if (run <= _troughRun) return (run - _troughRun) / (_L * 3); // flats, shoreward of the trough
+  let i = 0;
+  while (i < aIdx - 1 && _run[i + 1] < run) i++;
+  const seg = (_run[i + 1] - _run[i]) || 1;
+  return (i + (run - _run[i]) / seg) / PN;
+}
+
 const _o = { run: 0, ht: 0 };
-/** Position on the cross-section. run is metres seaward of the trough, ht is metres up. */
+/** Position on the cross-section. run is metres seaward of the LIP (so <= 0 on the face), ht up. */
 export function colAt(u) {
-  if (u <= 0) { _o.run = u * _L * 3.0; _o.ht = 0; return _o; }   // flats, shoreward
+  if (u <= 0) { _o.run = _troughRun + u * _L * 3.0; _o.ht = 0; return _o; }   // flats, shoreward
   if (u >= 1) {                                                  // straight past the lip tip
     const e = (u - 1) * _L;
     _o.run = _run[PN] + Math.cos(_phi) * e;
@@ -82,10 +131,11 @@ export function colAt(u) {
 
 const D = Math.PI / 180;
 
-// How much of the point's contour turn shows up as actual bend in the crest line. The crest
-// lags the contours badly (that is what leaves a peel angle at all), so it stays far
-// straighter than the bottom underneath it.
-const P_BEND = 0.30;
+// How much of the point's contour turn shows up as actual bend in the crest line. A real
+// breaking wave is a near-straight line — the curvature you see in the ocean is crossing
+// swells, not a single peeling wall. So the crest stays almost dead straight and it is the
+// STEEPNESS that varies down the line, not the bearing. Keep this tiny.
+const P_BEND = 0.04;
 
 /**
  * The wave is DERIVED, not authored.
@@ -123,6 +173,8 @@ const _peelTmp = { A: 0, phi: 0, pa: 0, peel: 0 };
 const _labelTmp = { A: 0, phi: 0, pa: 0, peel: 0 };
 const _bathTmp = { depth: 1, slope: 0.04, contour: 0 };
 const _frame = { x: 0, z: 0, tx: 1, tz: 0, nx: 0, nz: -1 };
+const _fieldFrame = { x: 0, z: 0, tx: 1, tz: 0, nx: 0, nz: -1 };
+const _fieldShape = {};
 
 export class Wave {
   constructor(seed = 1) {
@@ -130,7 +182,23 @@ export class Wave {
     this.bath = new Bathymetry(seed, 1);       // span is normalised; set after endS is known
     this._buildSections(seed);
     this._buildBaseline();
+
+    /*
+     * Shoreward propagation. The crest does two things at once: it peels ALONG the point
+     * (the break point b) and it marches TOWARD the beach at the swell celerity. Only the
+     * peel was modelled before, so the wall sat still in world space and the beach never got
+     * closer. Here the whole crest line rigidly drifts shoreward — everything riding the
+     * wave inherits it through frame(), so the fixed beach and rocks visibly approach.
+     */
+    this._adv = 0;                 // metres advanced shoreward so far (set per-frame by time)
+    this._advX = 0; this._advZ = 0;
+    this.driftSpeed = this.cMean;  // celerity: bigger/deeper wave marches in faster
+    const mid = this.frame(this.endS * 0.5, {});   // read shore-normal with _adv still 0
+    this._advX = -mid.nx; this._advZ = -mid.nz;     // shoreward is -seaward-normal
   }
+
+  /** Advance the whole crest shoreward to time t (seconds since the ride began). */
+  setAdvance(t) { this._adv = this.driftSpeed * t; }
 
   /**
    * Work out how long the point is, then hand the bathymetry that span.
@@ -200,8 +268,8 @@ export class Wave {
     const b = this.bl;
     const f = clamp((s - b.s0) / b.ds, 0, b.n - 1.001);
     const i = f | 0, k = f - i;
-    out.x = b.X[i] + (b.X[i + 1] - b.X[i]) * k;
-    out.z = b.Z[i] + (b.Z[i + 1] - b.Z[i]) * k;
+    out.x = b.X[i] + (b.X[i + 1] - b.X[i]) * k + this._advX * this._adv;
+    out.z = b.Z[i] + (b.Z[i + 1] - b.Z[i]) * k + this._advZ * this._adv;
     const c = b.CS[i] + (b.CS[i + 1] - b.CS[i]) * k;
     const sn = b.SN[i] + (b.SN[i + 1] - b.SN[i]) * k;
     out.tx = c; out.tz = sn;
@@ -320,7 +388,9 @@ export class Wave {
     const r = this.raw(b, _peelTmp);
     // once the wave runs out of point the peel angle collapses and it slams shut
     const over = smoothstep(this.endS - 40, this.endS + 60, b);
-    return lerp(r.peel, 24, over);
+    // peelScale lets the break stop travelling entirely: at 0 the whole wall stands up at
+    // once and there is no pocket racing away from you, so any heading is fair game.
+    return lerp(r.peel, 24, over) * TUNE.peelScale;
   }
 
   /**
@@ -333,6 +403,72 @@ export class Wave {
     out.x = f.x + f.nx * p.run;
     out.y = p.ht;
     out.z = f.z + f.nz * p.run;
+    return out;
+  }
+
+  /**
+   * Sample the wave as a WORLD FIELD: given a world point (x, z), find the water surface
+   * under it and everything the free-roaming surfer needs — height, the local frame, how
+   * steep the face is there, which way gravity pulls along the surface, and how much pocket
+   * power reaches that spot. This is what lets the surfer be a body in the world rather than
+   * a point pinned to the wave: it can sit still while the wave drifts past, run over the
+   * back, or roam the flats, and the physics just reads whatever surface is beneath it.
+   *
+   * `sGuess` seeds the projection (pass last frame's station) so it converges in a couple of
+   * iterations as the surfer moves smoothly.
+   */
+  field(x, z, t, b, sGuess, out) {
+    // project the world point onto the (drifting) crest line to get station s and the
+    // seaward offset `run`; a few Newton steps since the crest is nearly straight
+    let s = sGuess || 0;
+    for (let k = 0; k < 4; k++) {
+      const f = this.frame(s, _fieldFrame);
+      s += (x - f.x) * f.tx + (z - f.z) * f.tz;
+    }
+    const f = this.frame(s, _fieldFrame);
+    const run = (x - f.x) * f.nx + (z - f.z) * f.nz;
+
+    const sh = this.shape(s, b, t, _fieldShape);
+    column(sh.phi, sh.A);
+    const aU = colApexU();
+    const cRun = colAt(aU).run;     // seaward offset of the crest
+    const cHt = colAt(aU).ht;       // crest height
+
+    let u, y, beta, slopeSeaward, onFace;
+    if (run > cRun) {
+      // behind the crest: the back of the wave, sloping down to the open sea. Gravity here
+      // pulls you further over (seaward), so going over the top rolls you off the back.
+      onFace = 0;
+      const backLen = Math.max(2.5, sh.A * 1.6);
+      const q = clamp01((run - cRun) / backLen);
+      y = cHt * (1 - q);
+      beta = 0;
+      slopeSeaward = q < 1 ? Math.sin(Math.atan2(cHt, backLen)) : 0;
+      u = aU;
+    } else {
+      // the rideable front face (and, for run<0, the flat inside water)
+      onFace = 1;
+      u = uFromRun(run);
+      beta = colBeta(clamp01(u));
+      y = Math.max(0, colAt(u).ht);
+      slopeSeaward = -Math.sin(beta);   // downhill is shoreward, so seaward component is < 0
+    }
+
+    out.s = s;
+    out.run = run;
+    out.u = u;
+    out.beta = beta;
+    out.y = y;
+    out.slopeSeaward = slopeSeaward;
+    out.onFace = onFace;
+    out.tx = f.tx; out.tz = f.tz;
+    out.nx = f.nx; out.nz = f.nz;
+    out.d = s - b;
+    out.pocket = pocketPower(out.d, sh.shoulder);
+    out.A = sh.A; out.phi = sh.phi;
+    out.steep = sh.steep; out.stand = sh.stand; out.shoulder = sh.shoulder;
+    out.hollow = sh.hollow; out.broken = sh.broken;
+    out.c = sh.c; out.pa = sh.pa; out.peel = sh.peel;
     return out;
   }
 }

@@ -10,6 +10,9 @@ export const DEFAULTS = {
   wrap: 0.95,      // how hard the point's contours turn. This is what stops it closing out.
   period: 12.0,    // swell period (s). Long period = more power, more likely to barrel.
   peel: 1.00,      // trim on the resulting peel angle
+  peelScale: 1.00, // how fast the break RUNS down the line. 1 = normal peel, 0 = the whole
+                   // wall breaks at once (closeout) so nothing drags you down the line and
+                   // you are free to point straight at the beach.
   length: 300,     // metres the wave travels from first break to the sand
 
   // the board

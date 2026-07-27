@@ -13,7 +13,7 @@
  */
 import * as THREE from 'three';
 import { CFG } from '../config.js';
-import { column, colAt, colBeta, colApexU } from '../wave.js';
+import { column, colAt, colBeta, colApexU, colTrough } from '../wave.js';
 import { clamp01, lerp, smoothstep, hash2 } from '../rng.js';
 
 const M = CFG.mesh;
@@ -124,7 +124,7 @@ export class WaveMesh {
       const apexU = colApexU();
       const apex = colAt(apexU);
       const apexRun = apex.run, apexHt = apex.ht;
-      const lipRun = colAt(1).run;
+      const troughRun = colTrough();     // inside water hangs off the (moving) trough
 
       const curl = Math.exp(-Math.pow((d - 1.2) / 4.2, 2));        // foam line at the curl
       const chop = sh.broken;
@@ -138,7 +138,7 @@ export class WaveMesh {
         let run, ht, u, beta;
         if (r.flat !== null) {
           u = 0;
-          run = r.flat;
+          run = troughRun + r.flat;   // shoreward of the trough, which sits under the lip line
           beta = 0;
           // inside water: a lazy chop, plus churn where it has already broken
           ht = Math.sin(s * 0.09 + t * 1.1 + r.flat * 0.05) * 0.16
@@ -192,9 +192,9 @@ export class WaveMesh {
           cr = lerp(cr, C_FOAM[0], fo);
           cg = lerp(cg, C_FOAM[1], fo);
           cbl = lerp(cbl, C_FOAM[2], fo);
-          // shadow thrown by an overhanging lip
-          if (lipRun < run - 0.2 && u < apexU) {
-            const sd = clamp01((run - lipRun) / (sh.A * 0.9)) * 0.5;
+          // shadow thrown by an overhanging lip — the apex sticks out seaward over the face
+          if (apexRun > run + 0.2 && u < apexU) {
+            const sd = clamp01((apexRun - run) / (sh.A * 0.9)) * 0.5;
             cr *= 1 - sd; cg *= 1 - sd * 0.85; cbl *= 1 - sd * 0.7;
           }
           // water racing up the face
