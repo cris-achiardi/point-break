@@ -46,8 +46,12 @@
     <div id="barrel" class="barrelflag">IN THE BARREL</div>
   </div>
 
-  <!-- thumbsticks + action buttons, built by touch.js on touch-first devices only -->
-  <div id="touch" class="touch"></div>
+  <!--
+    Thumbsticks + action buttons, built by touch.js on touch-first devices only. Styled via the ID
+    rather than a class, deliberately: as a class it also matched <body> once main.js flagged the
+    device, which hid the whole page.
+  -->
+  <div id="touch"></div>
 
   <!-- live wave tuning -->
   <div id="tuner" class="tuner">
@@ -79,6 +83,62 @@
     </div>
   </div>
 
+  <!--
+    A phone has no console, so an uncaught error just reads as a black screen. This surfaces it
+    on the page instead. Installed BEFORE the module script on purpose: a plain inline script
+    runs first, so it is already listening if the module itself fails to load or parse.
+  -->
+  <div id="crash" class="crash"></div>
+  <!-- live diagnostics, on with ?debug=1 — the only way to see state on a phone -->
+  <div id="diag" class="diag"></div>
+  <script>
+    (function () {
+      var el = document.getElementById('crash');
+      var seen = {}, n = 0;
+      function show(kind, detail) {
+        var msg = kind + ': ' + detail;
+        // frame() re-arms rAF before it does any work, so a throw in the loop repeats every
+        // frame. Dedupe or the first bad frame buries the page in its own error.
+        if (seen[msg] || n > 5) return;
+        seen[msg] = 1; n++;
+        el.classList.add('on');
+        el.textContent += msg + '\n\n';
+      }
+      addEventListener('error', function (ev) {
+        if (ev.target && ev.target !== window && ev.target.src) {
+          show('FAILED TO LOAD', ev.target.src);
+          return;
+        }
+        var e = ev.error;
+        show('ERROR', e && e.stack ? e.stack : (ev.message || e));
+      }, true);
+      addEventListener('unhandledrejection', function (ev) {
+        var r = ev.reason;
+        show('PROMISE', r && r.stack ? r.stack : r);
+      });
+      /*
+       * Context loss is the other way a WebGL page goes black, and it is invisible to the error
+       * handlers above: it dispatches an event on the canvas and throws nothing at all. Mobile
+       * GPUs drop the context far more readily than desktop ones.
+       */
+      var gl = document.getElementById('gl');
+      if (gl) {
+        gl.addEventListener('webglcontextlost', function (ev) {
+          show('WEBGL CONTEXT LOST', (ev && ev.statusMessage) || '(no status given)');
+        });
+        gl.addEventListener('webglcontextrestored', function () {
+          show('WEBGL CONTEXT RESTORED', 'the context came back');
+        });
+      }
+      addEventListener('load', function () {
+        var c = document.getElementById('gl');
+        // probing with a throwaway context would itself risk eviction, so only check if unclaimed
+        if (c && !c.__claimed && !(c.getContext('webgl2') || c.getContext('webgl'))) {
+          show('NO WEBGL', 'this browser gave no webgl2 or webgl context');
+        }
+      });
+    })();
+  </script>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

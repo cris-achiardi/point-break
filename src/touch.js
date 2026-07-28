@@ -160,6 +160,21 @@ const ICONS = {
     '...#........',
     '............',
   ],
+  // double chevron back: rewind, i.e. take it from the top
+  restart: [
+    '............',
+    '............',
+    '.....#....#.',
+    '....##...##.',
+    '...###..###.',
+    '..####.####.',
+    '..####.####.',
+    '...###..###.',
+    '....##...##.',
+    '.....#....#.',
+    '............',
+    '............',
+  ],
   turn: [
     '............',
     '............',
@@ -244,10 +259,13 @@ export class TouchControls {
     this.root = document.getElementById('touch');
     if (!this.root) return;
     this.root.innerHTML = `
+      <div class="tmeta left">
+        <button class="tmbtn" data-meta="KeyR">${icon('restart')}</button>
+      </div>
       <div class="tmeta">
         <button class="tmbtn" data-meta="KeyC">${icon('cam')}</button>
-        <button class="tmbtn" data-meta="KeyM">${icon('snd')}${icon('mute')}</button>
-        <button class="tmbtn" data-meta="KeyP">${icon('pause')}${icon('play')}</button>
+        <button class="tmbtn" data-meta="KeyM" data-toggle>${icon('snd')}${icon('mute')}</button>
+        <button class="tmbtn" data-meta="KeyP" data-toggle>${icon('pause')}${icon('play')}</button>
       </div>
       <div class="tstick tturn" data-stick="turn">
         <i class="ttrack h"></i><b class="tknob"></b>
@@ -390,16 +408,19 @@ export class TouchControls {
    * Camera, mute and pause. These are pure pass-throughs to the keyboard's own handler, so the
    * button and the key cannot drift apart.
    *
-   * `.alt` swaps which of the two stacked icons shows. Toggling it locally is safe because on a
-   * touch-first device the button is the only thing that can change these — there is no keyboard
-   * to fall out of sync with.
+   * On the two that carry a state (mute, pause) `.alt` swaps which of the two stacked icons shows.
+   * Marked with data-toggle rather than inferred, so restart and camera — which have nothing to
+   * show a state for — do not silently pick up a latching icon.
+   *
+   * Toggling locally is safe because on a touch-first device the button is the only thing that can
+   * change these; there is no keyboard to fall out of sync with.
    */
   _bindMeta(el) {
     el.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       e.stopPropagation();
       this.onKey(el.dataset.meta);
-      if (el.dataset.meta !== 'KeyC') el.classList.toggle('alt');
+      if ('toggle' in el.dataset) el.classList.toggle('alt');
       el.classList.add('flash');
       setTimeout(() => el.classList.remove('flash'), 110);
     });

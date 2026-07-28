@@ -306,6 +306,46 @@ html, body {
   color: #7a9bb0;
 }
 
+/* --------------------------------------------------------------- crash
+ * On-screen error report. Above everything, including the overlay, because if this has anything
+ * in it then whatever is underneath is already broken and not worth looking at.
+ */
+.diag { display: none; }
+.diag.on {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 998;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, .72);
+  color: #7dffd0;
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre;
+  pointer-events: none;
+}
+.diag.bad { color: #ff8c78; }
+
+.crash { display: none; }
+.crash.on {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  background: #1b0705;
+  color: #ffb4a2;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;      /* body sets none, and you will want to copy this out */
+}
+
 /* ------------------------------------------------------- touch controls
  * Hidden by default and never even built unless isTouchDevice() agrees, so a desktop ride
  * carries none of this. Only `.touch.on` is visible, which keeps the pads off the start card and
@@ -327,19 +367,33 @@ html, body {
   --tdepth: 6px;          /* extrusion depth. Pressing a block travels exactly this far. */
 }
 
-.touch { display: none; }
+#touch { display: none; }
 
-.touch.on {
+/*
+ * Deliberately a ZERO-SIZED anchor, not a full-viewport box.
+ *
+ * It used to be `inset: 0`, which put a viewport-covering fixed element directly over the canvas.
+ * On mobile that is a real hazard: a fixed full-screen layer whose children use clip-path gets
+ * promoted to a composited layer, and some mobile compositors give that layer an opaque backing —
+ * which blacks out the canvas and the HUD underneath while anything above it (the debug readout at
+ * z-index 998) carries on drawing perfectly. Occupying no area at all makes that impossible, and
+ * costs nothing: every control inside is positioned against the viewport itself.
+ */
+#touch.on {
   display: block;
   position: fixed;
-  inset: 0;
-  z-index: 15;            /* over the canvas, under the overlay (311) and tuner (199) */
-  pointer-events: none;   /* the container is inert; only the controls below opt back in */
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  z-index: 15;            /* over the canvas, under the overlay and tuner (199) */
+  pointer-events: none;   /* the anchor is inert; only the controls below opt back in */
 }
 
-.touch.on .tstick,
-.touch.on .tpad,
-.touch.on .tmbtn {
+#touch.on .tstick,
+#touch.on .tpad,
+#touch.on .tmbtn {
   pointer-events: auto;
   /* stop the browser claiming the gesture for scroll, pull-to-refresh or double-tap zoom */
   touch-action: none;
@@ -360,8 +414,9 @@ html, body {
 
 /* ---- thumbsticks ---- */
 
+/* fixed, not absolute: the container is a 0x0 anchor, so these lay out against the viewport */
 .tstick {
-  position: absolute;
+  position: fixed;
   bottom: env(safe-area-inset-bottom, 0px);
   width: 128px;
   height: 128px;
@@ -420,7 +475,7 @@ html, body {
 /* ---- action buttons ---- */
 
 .tbuttons {
-  position: absolute;
+  position: fixed;
   right: calc(156px + env(safe-area-inset-right, 0px));
   bottom: calc(22px + env(safe-area-inset-bottom, 0px));
   display: grid;
@@ -477,11 +532,17 @@ html, body {
 /* ---- meta buttons: camera, mute, pause ---- */
 
 .tmeta {
-  position: absolute;
+  position: fixed;
   top: calc(14px + env(safe-area-inset-top, 0px));
   right: calc(20px + env(safe-area-inset-right, 0px));
   display: flex;
   gap: 8px;
+}
+/* restart lives alone on the far side, well away from mute and pause — it throws away your ride,
+   so it should be nowhere near a button you might reach for mid-wave */
+.tmeta.left {
+  right: auto;
+  left: calc(20px + env(safe-area-inset-left, 0px));
 }
 
 .tmbtn {
@@ -524,8 +585,10 @@ html, body {
  * and the pocket meter is centred at 62vw — which flanks the sticks happily in landscape but
  * runs straight through them in portrait.
  */
-body.touch .tr { top: 64px; }
-body.touch .bottom { bottom: 158px; width: min(520px, 76vw); }
+/* both top corners now carry buttons, so the speed and score panels move down out from under them */
+body.is-touch .tl,
+body.is-touch .tr { top: 64px; }
+body.is-touch .bottom { bottom: 158px; width: min(520px, 76vw); }
 
 /* Short landscape — a phone on its side has very little height to give away. */
 @media (orientation: landscape) and (max-height: 460px) {
@@ -536,8 +599,9 @@ body.touch .bottom { bottom: 158px; width: min(520px, 76vw); }
   .tpad { height: 50px; min-width: 74px; font-size: 8px; }
   .tpad .ico { width: 18px; height: 18px; }
   .tmbtn { width: 34px; height: 34px; }
-  body.touch .tr { top: 18px; right: 140px; }
-  body.touch .bottom { bottom: 22px; width: min(420px, 44vw); }
+  body.is-touch .tl { top: 18px; left: 62px; }
+  body.is-touch .tr { top: 18px; right: 140px; }
+  body.is-touch .bottom { bottom: 22px; width: min(420px, 44vw); }
 }
 
 /* ------------------------------------------------------------ overlay */
@@ -548,7 +612,14 @@ body.touch .bottom { bottom: 158px; width: min(520px, 76vw); }
   display: grid;
   place-items: center;
   background: radial-gradient(120% 90% at 50% 40%, rgba(6, 18, 29, .72), rgba(6, 18, 29, .94));
-  backdrop-filter: blur(2px);
+  /*
+   * NO backdrop-filter here. It has to sample the WebGL canvas behind it, and on mobile that
+   * combination is fragile — with a scroll container nested inside (the card is capped at 92vh and
+   * scrolls), some mobile compositors give up on sampling and paint the backdrop opaque, which
+   * blacked out the whole attract screen before you could even tap DROP IN. The gradient above
+   * already carries the scrim; the 2px blur underneath it was never doing visible work, least of
+   * all over a deliberately pixelated render.
+   */
   transition: opacity .3s;
 }
 .overlay.off { opacity: 0; pointer-events: none; }

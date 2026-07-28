@@ -49,10 +49,31 @@ const input = new Input((code) => {
  * On a phone or tablet, hang analog thumbsticks off the same Input. Built only where it is
  * wanted — a desktop ride never constructs the pads and never touches sample()'s touch hook.
  */
-const touch = isTouchDevice() ? new TouchControls(input, input.onKey) : null;
-if (touch) {
-  input.touch = touch;
-  document.body.classList.add('touch');   // lifts the pocket meter clear of the pads
+let touch = null;
+let touchNote = 'off';
+if (isTouchDevice()) {
+  /*
+   * try/catch so a fault in here can never take the game down with it. Without it a throw during
+   * construction aborts module evaluation, so build() and the first requestAnimationFrame at the
+   * bottom of this file never run — and the failure presents as a silent blank screen rather than
+   * as the error it actually is.
+   */
+  try {
+    touch = new TouchControls(input, input.onKey);
+    input.touch = touch;
+    /*
+     * `is-touch`, NOT `touch`. The container's hide rule was once the class selector
+     * `.touch { display: none }`, which matches EVERY element carrying that class — so putting
+     * `touch` on <body> set display:none on the whole document. The page was not crashing, it was
+     * being told not to render, which is why it threw nothing and reported a healthy 60fps. The
+     * container rules are ID-scoped now, and this name cannot collide with them either way.
+     */
+    document.body.classList.add('is-touch');
+    touchNote = 'on';
+  } catch (e) {
+    touchNote = 'THREW: ' + (e && e.message);
+    throw e;
+  }
 }
 
 /* ------------------------------------------------------------------ setup */
@@ -101,6 +122,44 @@ addEventListener('resize', () => {
   rig?.resize(a);
 });
 
+/* -------------------------------------------------------------- diagnostics
+ * A phone gives you no console and no devtools, so "it goes black" is all the signal you get.
+ * This prints the handful of numbers that distinguish the ways that can happen: the loop having
+ * stalled (frame count stops climbing), a NaN having poisoned the camera or the rider (Three.js
+ * renders nothing at all and reports no error), the post-process having faded to black on its
+ * own, or the drawing surface having collapsed to nothing.
+ */
+const DIAG = new URLSearchParams(location.search).get('debug') === '1';
+const diagEl = document.getElementById('diag');
+let frames = 0;
+let fps = 0, fpsT = 0, fpsN = 0;
+
+function bad(...vals) {
+  return vals.some((v) => !Number.isFinite(v));
+}
+
+function diag(dt, mode) {
+  frames++;
+  fpsT += dt; fpsN++;
+  if (fpsT >= 0.5) { fps = fpsN / fpsT; fpsT = 0; fpsN = 0; }
+  if (!DIAG || !diagEl) return;
+  const c = rig?.cam.position;
+  const broken = bad(c?.x, c?.y, c?.z, sf.px, sf.py, sf.pz, surfer?.spd, surfer?.x, surfer?.z);
+  diagEl.classList.add('on');
+  diagEl.classList.toggle('bad', broken);
+  const inf = pix.renderer.info;
+  diagEl.textContent = [
+    `${mode}  f${frames}  ${fps.toFixed(0)}fps  ${broken ? '*** NaN ***' : 'finite'}`,
+    `cam  ${c ? `${c.x.toFixed(1)} ${c.y.toFixed(1)} ${c.z.toFixed(1)}` : '-'}`,
+    `rider ${sf.px.toFixed(1)} ${sf.py.toFixed(1)} ${sf.pz.toFixed(1)}`,
+    `spd ${(surfer?.spd ?? 0).toFixed(1)}  s ${(surfer?.s ?? 0).toFixed(0)}  u ${(surfer?.u ?? 0).toFixed(2)}`,
+    `dark ${dark.toFixed(2)}  tint ${tint.toFixed(2)}`,
+    `buf ${pix.target.width}x${pix.target.height}  css ${innerWidth}x${innerHeight}`,
+    `geo ${inf.memory.geometries} tex ${inf.memory.textures} calls ${inf.render.calls}`,
+    `touch ${touchNote}  nodes ${document.getElementById('touch')?.childElementCount ?? '-'}`,
+  ].join('\n');
+}
+
 /* ------------------------------------------------------------------- loop */
 
 let last = performance.now();
@@ -111,8 +170,8 @@ function frame(now) {
   requestAnimationFrame(frame);
   let dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  if (!running) { renderIdle(); return; }
-  if (paused) return;
+  if (!running) { renderIdle(); diag(dt, 'IDLE'); return; }
+  if (paused) { diag(dt, 'PAUSED'); return; }
 
   const inp = input.sample();
 
@@ -216,6 +275,7 @@ function frame(now) {
   hud.update(surfer, wave, dt);
   audio.update(surfer);
   pix.render(world.scene, rig.cam);
+  diag(dt, 'RIDE');
   // Everything the substeps pushed has now been seen. Clearing here rather than inside
   // update() is what stops most events being thrown away — the physics runs several substeps
   // per frame, so a per-substep clear only ever delivered whatever the last one emitted.
