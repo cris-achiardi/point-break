@@ -3,6 +3,7 @@ import { CFG } from './config.js';
 import { Wave } from './wave.js';
 import { Surfer, STATE } from './surfer.js';
 import { Input } from './input.js';
+import { TouchControls, isTouchDevice } from './touch.js';
 import { Hud } from './hud.js';
 import { Audio } from './audio.js';
 import { Pixelizer } from './render/renderer.js';
@@ -44,6 +45,16 @@ const input = new Input((code) => {
   }
 });
 
+/*
+ * On a phone or tablet, hang analog thumbsticks off the same Input. Built only where it is
+ * wanted — a desktop ride never constructs the pads and never touches sample()'s touch hook.
+ */
+const touch = isTouchDevice() ? new TouchControls(input, input.onKey) : null;
+if (touch) {
+  input.touch = touch;
+  document.body.classList.add('touch');   // lifts the pocket meter clear of the pads
+}
+
 /* ------------------------------------------------------------------ setup */
 
 function build() {
@@ -71,6 +82,8 @@ function start(newSeed) {
   audio.start();
   hud.hideOverlay();
   hud.show(true);
+  touch?.releaseAll();      // no axis or held button carried over from the last ride
+  touch?.show(true);
   running = true;
   paused = false;
   endT = 0;
@@ -191,6 +204,7 @@ function frame(now) {
     if (endT > 2.0 && running) {
       running = false;
       hud.show(false);
+      touch?.show(false);
       const total = surfer.score;
       hud.overlay(hud.results(surfer, wave, best));
       best = Math.max(best, total);

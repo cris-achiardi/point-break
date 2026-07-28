@@ -306,6 +306,240 @@ html, body {
   color: #7a9bb0;
 }
 
+/* ------------------------------------------------------- touch controls
+ * Hidden by default and never even built unless isTouchDevice() agrees, so a desktop ride
+ * carries none of this. Only `.touch.on` is visible, which keeps the pads off the start card and
+ * off the results screen.
+ *
+ * THE LOOK: chunky extruded blocks, in the same idiom as the 320x240 posterise pass the world is
+ * rendered through. Everything here is deliberately hard-edged — integer offsets, no blur radius
+ * anywhere, hard-stop gradients instead of blends, octagons instead of circles. A smoothly
+ * shaded control layer would be the only anti-aliased thing on the screen and would read as
+ * pasted on top of the game rather than part of it.
+ */
+
+:root {
+  --tface:  #1d5c78;      /* button top face */
+  --tside:  #0b2c3e;      /* the extruded side, i.e. how "tall" a block looks */
+  --tedge:  #06121d;      /* hard outline */
+  --tlit:   rgba(255, 255, 255, .26);
+  --tshade: rgba(0, 0, 0, .40);
+  --tdepth: 6px;          /* extrusion depth. Pressing a block travels exactly this far. */
+}
+
+.touch { display: none; }
+
+.touch.on {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 15;            /* over the canvas, under the overlay (311) and tuner (199) */
+  pointer-events: none;   /* the container is inert; only the controls below opt back in */
+}
+
+.touch.on .tstick,
+.touch.on .tpad,
+.touch.on .tmbtn {
+  pointer-events: auto;
+  /* stop the browser claiming the gesture for scroll, pull-to-refresh or double-tap zoom */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* pixel icons: never resampled smoothly, and sized in whole pixels */
+.ico {
+  display: block;
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+  shape-rendering: crispEdges;   /* the one property that keeps 12x12 art from going fuzzy */
+  image-rendering: pixelated;
+}
+
+/* ---- thumbsticks ---- */
+
+.tstick {
+  position: absolute;
+  bottom: env(safe-area-inset-bottom, 0px);
+  width: 128px;
+  height: 128px;
+  margin: 14px;
+  /* an octagon reads as a pixel-art circle; border-radius would give a smooth one */
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+  background:
+    linear-gradient(180deg, rgba(13, 47, 66, .80) 0 62%, rgba(7, 26, 38, .80) 62% 100%);
+  box-shadow: inset 4px 4px 0 var(--tlit), inset -4px -4px 0 var(--tshade);
+}
+.tstick.tturn { left: env(safe-area-inset-left, 0px); }
+.tstick.twalk { right: env(safe-area-inset-right, 0px); }
+
+/* the axis each stick actually reads, drawn so you can see it is one-dimensional */
+.ttrack {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: rgba(111, 240, 200, .17);
+  transform: translate(-50%, -50%);
+}
+.ttrack.h { width: 76%; height: 4px; }
+.ttrack.v { width: 4px; height: 76%; }
+
+.tknob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
+  /* hard stop, not a blend: the "lit top / dark bottom" of an extruded cap */
+  background: linear-gradient(180deg, #6ff0c8 0 60%, #2b9a79 60% 100%);
+  box-shadow: inset 4px 4px 0 rgba(255, 255, 255, .34), inset -4px -4px 0 rgba(0, 0, 0, .30);
+  /* no transition: the knob must track the thumb exactly, or the stick feels like syrup */
+}
+.tstick.down .tknob { background: linear-gradient(180deg, #b6ffe8 0 60%, #3fb894 60% 100%); }
+
+.tstick u {
+  position: absolute;
+  bottom: 12px;
+  left: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  text-decoration: none;
+  color: rgba(150, 200, 224, .75);
+  pointer-events: none;
+}
+.tstick u .ico { width: 18px; height: 18px; }
+.tstick u span { font-size: 8px; letter-spacing: 2px; }
+
+/* ---- action buttons ---- */
+
+.tbuttons {
+  position: absolute;
+  right: calc(156px + env(safe-area-inset-right, 0px));
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  display: grid;
+  gap: 10px;
+  justify-items: stretch;
+}
+
+/*
+ * An extruded block. The stack is: hard outline, then a solid unblurred offset for the side wall,
+ * then two insets for the lit top edge and shaded bottom edge. Pressing it translates by exactly
+ * the extrusion depth and drops the side wall to zero, so the block visibly sinks flush.
+ */
+.tpad {
+  position: relative;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: #d3f4e8;
+  background: linear-gradient(180deg, #23708f 0 58%, var(--tface) 58% 100%);
+  border: 0;
+  border-radius: 0;
+  padding: 0 12px;
+  min-width: 84px;
+  height: 62px;
+  cursor: pointer;
+  box-shadow:
+    inset 4px 4px 0 var(--tlit),
+    inset -4px -4px 0 var(--tshade),
+    0 var(--tdepth) 0 var(--tside),
+    0 var(--tdepth) 0 3px var(--tedge),
+    0 0 0 3px var(--tedge);
+  transition: none;
+}
+.tpad span { pointer-events: none; }
+
+/* :active is unreliable while a pointer is captured, so touch.js drives .down instead */
+.tpad.down {
+  transform: translateY(var(--tdepth));
+  background: linear-gradient(180deg, #8ff8d8 0 58%, #4ed3ab 58% 100%);
+  color: #04231a;
+  box-shadow:
+    inset 4px 4px 0 rgba(255, 255, 255, .30),
+    inset -4px -4px 0 rgba(0, 0, 0, .22),
+    0 0 0 var(--tside),
+    0 0 0 3px var(--tedge);
+}
+
+/* ---- meta buttons: camera, mute, pause ---- */
+
+.tmeta {
+  position: absolute;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  right: calc(20px + env(safe-area-inset-right, 0px));
+  display: flex;
+  gap: 8px;
+}
+
+.tmbtn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: #a9d2e4;
+  background: linear-gradient(180deg, #17475e 0 58%, #0f3446 58% 100%);
+  cursor: pointer;
+  /* shallower than the action pads — these are chrome, not part of the ride */
+  box-shadow:
+    inset 3px 3px 0 rgba(255, 255, 255, .16),
+    inset -3px -3px 0 rgba(0, 0, 0, .34),
+    0 4px 0 var(--tside),
+    0 4px 0 2px var(--tedge),
+    0 0 0 2px var(--tedge);
+}
+.tmbtn .ico { width: 20px; height: 20px; }
+.tmbtn.flash {
+  transform: translateY(4px);
+  box-shadow:
+    inset 3px 3px 0 rgba(255, 255, 255, .16),
+    inset -3px -3px 0 rgba(0, 0, 0, .34),
+    0 0 0 var(--tside),
+    0 0 0 2px var(--tedge);
+}
+/* each toggle button holds both states as stacked icons; .alt picks the second */
+.tmbtn .ico:nth-child(2) { display: none; }
+.tmbtn.alt .ico:nth-child(1) { display: none; }
+.tmbtn.alt .ico:nth-child(2) { display: block; }
+.tmbtn.alt { color: var(--warn); }
+
+/*
+ * Make room for all of it. The score panel shares the top-right corner with the meta buttons,
+ * and the pocket meter is centred at 62vw — which flanks the sticks happily in landscape but
+ * runs straight through them in portrait.
+ */
+body.touch .tr { top: 64px; }
+body.touch .bottom { bottom: 158px; width: min(520px, 76vw); }
+
+/* Short landscape — a phone on its side has very little height to give away. */
+@media (orientation: landscape) and (max-height: 460px) {
+  .tstick { width: 106px; height: 106px; margin: 10px; }
+  .tknob { width: 46px; height: 46px; margin: -23px 0 0 -23px; }
+  .tstick u { bottom: 8px; }
+  .tbuttons { right: calc(128px + env(safe-area-inset-right, 0px)); gap: 7px; }
+  .tpad { height: 50px; min-width: 74px; font-size: 8px; }
+  .tpad .ico { width: 18px; height: 18px; }
+  .tmbtn { width: 34px; height: 34px; }
+  body.touch .tr { top: 18px; right: 140px; }
+  body.touch .bottom { bottom: 22px; width: min(420px, 44vw); }
+}
+
 /* ------------------------------------------------------------ overlay */
 
 .overlay {

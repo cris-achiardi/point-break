@@ -226,37 +226,105 @@ export const CFG = {
   },
 
   /*
-   * THE PUMP. Double-tap forward: a compression and extension against the face that converts
-   * the wave's rising water into drive. It only pays where there IS rising water — out on a
-   * dead shoulder or the flat inside you are just bouncing on a board.
+   * THE PUMP. A decompression: you spring forward off the front foot, unstick the rail, drive
+   * off the rising water and then settle back down onto the face. A power trim.
    *
-   * `room` is what stops it being a free-energy pedal: the faster you are already going the
-   * less a pump returns, so it tops you up toward the wave's own speed rather than past it.
+   * It only pays where there IS rising water — out on a dead shoulder or the flat inside you
+   * are just bouncing on a board. `room` is what stops it being a free-energy pedal: the faster
+   * you already are the less it returns, so it tops you up toward the wave's own speed.
+   *
+   * LINKING is how you actually accelerate. One pump is a nudge; pumps landed in rhythm
+   * compound, each one worth more than the last, so a good surfer generates speed down the line
+   * rather than waiting for the wave to hand it over. `room` still bounds the whole chain, so
+   * linking gets you to the ceiling faster — it does not raise it.
    */
   pump: {
-    gain: 1.25,       // m/s handed back by a perfectly placed pump
-    ceil: 17.0,       // speed at which a pump returns nothing at all
+    /*
+     * A pump that lands at all is worth something REAL. `base` is the floor — about 5 km/h — and
+     * `gain` is what placement and stance earn on top. Splitting them matters: the old single
+     * gain was multiplied by quality AND stance AND room, so three individually-reasonable
+     * factors compounded into a pump worth roughly 1 km/h that drag ate immediately.
+     */
+    /*
+     * Sized so that even a mid-stance pump at ordinary riding speed clears 5 km/h AFTER `room`
+     * has taken its cut — `room` roughly halves the payout at a typical 8 m/s, which is what made
+     * the old numbers feel like nothing.
+     */
+    base: 2.40,       // m/s from any pump that lands on the face
+    gain: 1.60,       // m/s more, earned by placement and stance
+    /*
+     * The ceiling belongs to the WAVE, not to a constant. A stood-up steep pocket will carry you
+     * fast; a fat, barely-standing shoulder will not, however well you pump. This is what caps a
+     * link chain — the wave decides how much speed is there to be had.
+     */
+    ceilMin: 9.5,     // fat, barely standing water
+    ceilMax: 19.5,    // a steep, fully stood-up pocket
     lift: 0.55,       // metres up the face it also carries you — where the speed comes from
-    step: 0.35,       // stance thrown FORWARD by the weight transfer — a pump is a lunge
-    cool: 0.38,       // pumping is rhythmic, so this is short
+    hop: 1.00,        // metres the board is thrown FORWARD — a pump is a jump, so it travels
+    /*
+     * Unweighting the board while the pump unloads: the "reduce friction" half of the manoeuvre,
+     * and the reason the speed STICKS. Without it a pump lifted you above the drag equilibrium
+     * and the next few frames pulled you straight back down to it — speed gained and instantly
+     * lost, which is exactly what it felt like.
+     */
+    slip: 0.55,       // fraction of drag cancelled at the pump, decaying away over `show`
+    cool: 0.20,       // rhythm floor: fast enough to chain, slow enough not to be a mash button
     show: 0.30,       // how long the pump reads on the HUD/effects
+    /*
+     * Stance scales the return rather than being moved by it. A pump is a drive off the FRONT
+     * foot, so standing forward is where the power is; parked over the fins there is nothing to
+     * spring off and it barely returns anything.
+     */
+    levNose: 1.00,    // multiplier standing fully forward...
+    levTail: 0.15,    // ...and fully back over the fins
+    levPivot: -0.30,  // stance below which a pump stops working at all
+    /* the chain */
+    linkWin: 0.62,    // land the next pump inside this to keep the chain alive
+    linkStep: 0.34,   // extra multiplier per linked pump
+    linkMax: 2.30,    // ceiling on the chain multiplier
   },
 
   /*
-   * THE BRAKE. Modal, not a one-shot: the double-tap back sets the rail and throws your weight
-   * over the fins, and then you HOLD back to keep it buried and let go when the section has
-   * come to you. Used to stall a barrel open in front of you.
+   * THE BRAKE. Hold it and you keep slowing, release and the rail comes up. You are shifting
+   * your weight back to bog the tail, so how much it bites is purely HOW MUCH TAIL YOU CAN
+   * REACH — a stance decision you make with the walk, before and during the brake.
    *
-   * How much bite you get is how much of the tail you can actually reach — the same leverage
-   * curve the tail stamp uses — and because holding back also walks your stance toward the
-   * fins, keeping it down deepens the brake on its own. That loop IS the mechanic.
+   * It does not move your stance for you. Standing at dead centre you are not over the tail at
+   * all and there is almost nothing to bog, which is the whole point: where you stand on the
+   * board is the control, and the brake button only asks.
    */
   brake: {
-    cutNose: 0.96,    // speed retained by the initial stamp with no leverage...
-    cutTail: 0.62,    // ...and with all of it. Softer than a one-shot: the hold does the rest.
-    step: 0.35,       // stance thrown BACK over the fins by the weight transfer
-    holdDrag: 7.0,    // extra linear drag for as long as you keep it held, scaled by leverage
-    cool: 0.30,
+    cutNose: 0.99,    // speed retained by the initial set with no leverage...
+    cutTail: 0.74,    // ...and with all of it. Gentle: the HOLD is what dumps the speed.
+    holdDrag: 9.5,    // extra linear drag for as long as you keep it held, scaled by leverage
+    /*
+     * Constant deceleration, NOT scaled by speed, so a held brake actually arrives at a stop.
+     * holdDrag alone is proportional to how fast you are going, which decays toward zero without
+     * ever reaching it — you would coast forever at a crawl. This is the term that lets you sit
+     * down and stop dead while the wave runs on without you.
+     */
+    holdStop: 7.0,    // m/s^2 at full leverage
+    /*
+     * How much of the wave's carry a held brake defeats.
+     *
+     * `carry` is the wave translating a PLANING board along with it — and bogging the tail is the
+     * act of not planing any more. Without this the HUD (which shows vWater = hypot(spd, carry))
+     * had an unbeatable ~18 km/h floor: you could stand on the brake and watch the number refuse
+     * to fall, because stopping the board does nothing to carry.
+     */
+    carryCut: 0.85,   // fraction of carry cancelled at full leverage
+    cool: 0.12,       // just enough to stop a re-set firing every frame
+    /*
+     * Leverage over the tail: how much of it you can actually reach from where you stand.
+     *
+     * Near zero at mid-stance, because standing over the middle of the board you are not bogging
+     * anything. Not EXACTLY zero, though — the brake has to be able to bring you to a stop from
+     * any stance if you hold it long enough. From the middle that takes a very long time, which
+     * is the honest answer: you can stop, but not quickly, and not without committing.
+     */
+    levBase: 0.08,    // bite standing at the pivot...
+    levGain: 0.92,    // ...and how fast it comes on as you walk back from there
+    levPivot: 0.00,   // stance from which leverage over the tail starts to run out — dead centre
   },
 
   pocket: {

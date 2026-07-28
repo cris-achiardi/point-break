@@ -106,9 +106,14 @@ export class Surfer {
     this.pumpT = 0;        // decaying flag for the HUD and effects
     this.pumpCool = 0;
     this.pumpQ = 0;
-    this.braking = false;  // modal: entered by a double-tap back, held, then released
+    // The pump chain. pumpSince starts high so the first pump of a ride is never a link.
+    this.pumpLink = 1;     // multiplier on the current chain, 1 = a single unlinked pump
+    this.pumpSince = 1e3;  // seconds since the last pump, for the rhythm window
+    this.pumpCeil = 0;     // the speed ceiling the wave under you will actually support
+    this.braking = false;  // held: set by the brake channel, lasts until you let go
     this.brakeT = 0;       // how long it has been buried, for the HUD and effects
     this.brakeCool = 0;
+    this.brakeLev = 0;     // leverage over the tail at the current stance
 
     // scoring
     this.score = 0;
@@ -198,9 +203,31 @@ export class Surfer {
     const faceFlow = P.waterUp * pw * fd.steep;
     const vUp = faceFlow * (clamp01(this.u) - P.liftZero) / (1 - P.liftZero);
 
-    // ground speed floor from holding station on a moving wave (only while on the face)
+    /*
+     * Ground speed floor from holding station on a moving wave (only while on the face).
+     *
+     * A held brake defeats it. This term exists because a planing board on a moving face gets
+     * translated along with the wave — but bogging the tail is precisely the act of stopping
+     * planing, and once you are sitting in the water the wave passes under you and goes on
+     * without you. Leaving `carry` untouchable made it an unbeatable ~18 km/h floor: you could
+     * stand on the brake and watch the speedo refuse to move, because the number on the HUD is
+     * vWater, which can never fall below carry however hard you stop the board.
+     */
+    /*
+     * The brake reads its OWN leverage curve, not the tail stamp's. A stamp is a jab you can
+     * throw from most of the deck, but bogging the tail means actually standing on it — so this
+     * one is near zero at dead centre and only comes on as you commit to the back foot. Stance
+     * is the control; the button only asks.
+     *
+     * Computed up here, above `carry`, because carry now depends on it — read any later and it
+     * would be a substep stale.
+     */
+    const brakeLev = clamp01(BR.levBase + BR.levGain * (BR.levPivot - this.w));
+    this.brakeLev = brakeLev;      // the HUD reads this to show how much bite you actually have
+
+    const carryCut = this.braking ? 1 - BR.carryCut * brakeLev : 1;
     const carry = P.carryFrac * (fd.c / Math.max(0.30, Math.sin(fd.pa)))
-      * (0.35 + 0.65 * fd.stand) * onFace;
+      * (0.35 + 0.65 * fd.stand) * onFace * carryCut;
     this.vWater = Math.hypot(this.spd, carry);
     const vw = this.vWater;
 
@@ -229,6 +256,13 @@ export class Surfer {
     this.pumpT = Math.max(0, this.pumpT - dt);
     this.pumpCool = Math.max(0, this.pumpCool - dt);
     this.brakeCool = Math.max(0, this.brakeCool - dt);
+    /*
+     * The rhythm clock. Let the window lapse and the chain drops back to a single, so a run of
+     * pumps has to be kept up to be worth anything — you cannot bank a multiplier and cash it
+     * in three seconds later.
+     */
+    this.pumpSince += dt;
+    if (this.pumpSince > PU.linkWin) this.pumpLink = 1;
 
     if (input.takeDouble) {
       // A snap needs a direction to go: the double-tap breaks the tail loose, the steer is
@@ -238,14 +272,18 @@ export class Surfer {
         this._fireSnap(fd, input);
       }
       if (input.takeDouble('up') && this.pumpCool <= 0 && onFace > 0.5) {
-        this._firePump(fd, pw);
+        this._firePump(fd, pw, hx, hz);
       }
-      if (input.takeDouble('down') && this.brakeCool <= 0) this._fireBrake(tailLev);
+      if (input.takeDouble('down') && this.brakeCool <= 0) this._fireBrake(brakeLev);
     }
-    // Let go of back and the rail comes up. Holding it is what keeps the brake on — and
-    // because holding back is ALSO what walks your stance toward the fins, the longer you
-    // hold the more leverage you have and the harder it bites. That loop is the mechanic.
-    if (this.braking && input.weight >= 0) { this.braking = false; this.brakeT = 0; }
+    /*
+     * The brake is HELD, on its own channel, and lasts until you let go. It used to end the
+     * moment weight >= 0, which meant holding the brake and walking backward were the same act
+     * — you could not brake from mid-stance, and the hold dragged your stance to the tail
+     * whether you wanted it there or not. Now the two are independent: the walk decides how
+     * much tail you have, the brake decides whether you are leaning on it.
+     */
+    if (this.braking && !input.brake) { this.braking = false; this.brakeT = 0; }
     if (this.braking) this.brakeT += dt;
 
     if (this.snapT > 0) {
@@ -344,8 +382,26 @@ export class Surfer {
     if (this.u < -0.2) aDrag -= P.dragLin * P.flatsGlide * this.spd;   // gliding the inside
     // a blown snap does not just cost you the speed, it leaves you bogged for a moment
     if (this.stallT > 0) aDrag -= P.dragLin * N.stallDrag * this.spd;
-    // the buried rail, for as long as you hold it there
-    if (this.braking) aDrag -= P.dragLin * BR.holdDrag * tailLev * this.spd;
+    /*
+     * The bogged tail, for as long as you keep your weight on it. This is the brake — not the
+     * initial set, which is deliberately gentle. Both terms scale by how much tail you are
+     * actually standing over.
+     *
+     * Two terms because they do different jobs: the proportional one dumps speed hard while you
+     * still have some, and the constant one carries you the rest of the way to an actual stop
+     * (spd is floored at 0 below, so it can never reverse you).
+     */
+    if (this.braking) {
+      aDrag -= P.dragLin * BR.holdDrag * brakeLev * this.spd;
+      aDrag -= BR.holdStop * brakeLev;
+    }
+    /*
+     * A pump unweights the board as it unloads, and an unweighted board is a fast one. Applied
+     * LAST, as a scale on the whole accumulated drag, because the point is to briefly relieve
+     * every source of it at once — that is what "reduce friction" means, and it is what makes a
+     * pump's speed persist for long enough to be worth linking off.
+     */
+    if (this.pumpT > 0) aDrag *= 1 - PU.slip * clamp01(this.pumpT / PU.show);
 
     this.spd = Math.max(0, this.spd + (aGrav + aPush + aPump + aTurn + aWave + aDrag) * dt);
     this.topSpd = Math.max(this.topSpd, this.vWater);
@@ -522,18 +578,49 @@ export class Surfer {
   }
 
   /**
-   * A PUMP. Compress and extend against the face, and the rising water hands you drive.
+   * A PUMP. Spring forward off the front foot, unstick the rail, drive off the rising water,
+   * then settle back down onto the face. A power trim.
    *
-   * The whole thing is gated on there actually being rising water to push against: full
-   * pocket on a stood-up steep section pays, a dead shoulder or the flat inside pays nothing.
-   * `room` keeps it honest — the closer you already are to the ceiling the less it returns —
-   * so a pump tops you up toward the wave's speed instead of ratcheting past it.
+   * Gated on there actually being rising water to push against: a stood-up pocket pays, a dead
+   * shoulder or the flat inside pays nothing. `room` keeps it honest — the closer you already
+   * are to the ceiling the less it returns — so a pump tops you up toward the wave's speed
+   * instead of ratcheting past it.
+   *
+   * LINKING is the point. Land the next one in rhythm and the chain multiplier climbs, so speed
+   * comes from stringing pumps together rather than from any single one. Break the rhythm and it
+   * resets. `room` multiplies the chained gain too, so a long chain reaches the ceiling faster
+   * without ever going through it.
    */
-  _firePump(fd, pw) {
+  _firePump(fd, pw, hx, hz) {
     const steepq = clamp01((fd.phi - 0.35) / 1.15);
     const q = clamp01(pw * (0.35 + 0.65 * steepq) * fd.stand);
-    const room = clamp01(1 - this.vWater / PU.ceil);
-    this.spd += PU.gain * q * room;
+    /*
+     * Stance scales the drive instead of being shoved by it. A pump springs off the FRONT foot,
+     * so forward is where the power lives; parked back over the fins there is nothing to extend
+     * against. The old version threw your stance forward for you, which meant the manoeuvre
+     * picked your trim — now you pick it and the pump pays out accordingly.
+     */
+    const lev = lerp(PU.levTail, PU.levNose,
+      clamp01((this.w - PU.levPivot) / (1 - PU.levPivot)));
+    // rhythm: still inside the window since the last pump means this one links onto it
+    this.pumpLink = this.pumpSince <= PU.linkWin
+      ? Math.min(PU.linkMax, this.pumpLink + PU.linkStep)
+      : 1;
+    this.pumpSince = 0;
+    /*
+     * The ceiling this wave will actually support. A steep, stood-up pocket has speed in it; fat
+     * water does not, no matter how well you pump or how long the chain. This is the cap on
+     * linking — the chain gets you to the wave's limit faster, it cannot argue with the limit.
+     */
+    const ceil = lerp(PU.ceilMin, PU.ceilMax, clamp01(fd.stand * (0.35 + 0.65 * steepq)));
+    const room = clamp01(1 - this.vWater / ceil);
+    this.pumpCeil = ceil;
+    /*
+     * base is the floor every landed pump is worth; gain is what placement and stance add. Only
+     * `room` scales the floor, so a pump is always worth having until the wave itself runs out
+     * of speed to give.
+     */
+    this.spd += (PU.base + PU.gain * q * lev) * this.pumpLink * room;
     /*
      * ...and it carries you up the face, which is where that speed actually came from. Gated
      * against the same high line the rail grip uses: pumping drives you up the wall, it does
@@ -544,31 +631,46 @@ export class Surfer {
     const up = q * clamp01((hi - this.u) / 0.4);
     this.x += fd.nx * PU.lift * up;
     this.z += fd.nz * PU.lift * up;
-    // the weight lunges forward onto the front foot — a pump is a lunge, not a button
-    this.w = clamp(this.w + PU.step, -1, 1);
+    /*
+     * ...and it throws the whole board FORWARD, because a pump is a jump. The speed bump alone
+     * read as the numbers going up rather than as an athletic movement; a real displacement along
+     * the heading is what makes it feel like leaving the water and landing further down the line.
+     *
+     * Along the heading, so it goes where the board is pointed — down the line when you are
+     * trimming, up the face when you are climbing. Counted into `dist` because you genuinely
+     * travelled it.
+     */
+    this.x += hx * PU.hop;
+    this.z += hz * PU.hop;
+    this.dist += PU.hop;
     this.pumpQ = q;
     this.pumpT = PU.show;
     this.pumpCool = PU.cool;
-    if (q > 0.30) this.push('PUMP', 'pump');
+    // Report the chain, because it is the thing the player is trying to build. A single pump
+    // stays quiet at low quality, but a link always reads — that feedback IS the rhythm cue.
+    if (this.pumpLink > 1.01) this.push(`PUMP x${this.pumpLink.toFixed(1)}`, 'pump');
+    else if (q > 0.30) this.push('PUMP', 'pump');
   }
 
   /**
-   * A BRAKE. Stamp the tail and dump speed, to let a section stand up in front of you or to
-   * sit back into a barrel.
+   * SET A BRAKE. Lean back onto the tail and keep slowing until you let go.
    *
-   * Strength is your leverage over the tail — the same curve the held tail stamp uses, so
-   * standing over the nose you can barely check at all and standing over the fins you can put
-   * the brakes right on. That makes it a stance decision, not a free button.
+   * The initial set is only a small check — nearly all the speed loss comes from the sustained
+   * drag while `braking` is true, which is what makes it a hold rather than a one-shot tap.
+   *
+   * Strength is entirely your leverage over the tail, and this does NOT walk your stance to get
+   * it. Standing at dead centre there is no tail under you and the brake does close to nothing;
+   * to stop hard you have to walk back first and commit. That is the decision the mechanic is
+   * about, and moving the stance for you would make it for you.
    */
   _fireBrake(lev) {
     this.spd *= lerp(BR.cutNose, BR.cutTail, lev);
-    // the weight goes back over the fins with it — that is what a brake IS, and it hands you
-    // the leverage for the hold that follows
-    this.w = clamp(this.w - BR.step, -1, 1);
     this.braking = true;
     this.brakeT = 0;
     this.brakeCool = BR.cool;
-    this.push(lev > 0.65 ? 'HARD BRAKE' : 'CHECK', 'brake');
+    // Naming what you actually got: leaning on a brake you have no leverage for is a real and
+    // instructive outcome, so say so rather than reporting a brake that never happened.
+    this.push(lev > 0.62 ? 'HARD BRAKE' : lev > 0.22 ? 'CHECK' : 'NO TAIL', 'brake');
   }
 
   /** Reward a completed direction change: bigger swing + more speed kept = better. */
