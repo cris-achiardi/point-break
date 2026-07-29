@@ -4,6 +4,18 @@
   --pk: #6ff0c8;
   --warn: #ff7a5c;
   --shadow: 0 2px 0 #06121d, 0 0 8px rgba(0, 0, 0, .55);
+
+  /*
+   * The top of the HUD reads as two ROWS, and these three numbers are what keep them stacked:
+   *   row 1  speed on the left, score on the right
+   *   row 2  the section callout, centred
+   * --hudrow is how tall row 1 actually runs (42px speed at .95 line-height, then two 12px rows
+   * with a 4px margin each ~ 77px), so the callout can be positioned under it rather than at a
+   * hand-tuned offset that has to be re-guessed every time the panel gains a line.
+   */
+  --hudtop: 18px;      /* where row 1 starts */
+  --hudrow: 78px;      /* how tall row 1 runs */
+  --hudgap: 14px;      /* breathing room between the two rows */
 }
 
 * { box-sizing: border-box; }
@@ -40,8 +52,8 @@ html, body {
 .hud.on { opacity: 1; }
 
 .panel { position: absolute; text-shadow: var(--shadow); }
-.tl { top: 18px; left: 20px; }
-.tr { top: 18px; right: 20px; text-align: right; }
+.tl { top: var(--hudtop); left: 20px; }
+.tr { top: var(--hudtop); right: 20px; text-align: right; }
 
 .speed { font-size: 42px; font-weight: 700; line-height: .95; letter-spacing: -1px; }
 .speed em { font-size: 13px; font-style: normal; color: var(--dim); margin-left: 6px; letter-spacing: 1px; }
@@ -54,10 +66,12 @@ html, body {
 
 .score { font-size: 34px; font-weight: 700; letter-spacing: -1px; line-height: 1; }
 
-/* section callout */
+/* Section callout — row 2, stacked under the speed and score rather than sharing their line, which
+   on a phone put it straight through the middle of them. */
 .callout {
   position: absolute;
-  top: 74px; left: 0; right: 0;
+  top: calc(var(--hudtop) + var(--hudrow) + var(--hudgap));
+  left: 0; right: 0;
   text-align: center;
   font-size: 17px;
   letter-spacing: 6px;
@@ -295,9 +309,12 @@ html, body {
   background: var(--pk);
   border: 0;
   cursor: pointer;
+  /* these two used to come free from the bare `button` rule, which is now scoped to #go */
+  box-shadow: 0 4px 0 #23a37c;
 }
 .tbtn.ghost { background: #1d4a66; color: var(--ink); }
 .tbtn:hover { filter: brightness(1.15); }
+.tbtn:active { transform: translateY(3px); box-shadow: 0 1px 0 #23a37c; }
 
 .tnote {
   margin: 10px 0 0;
@@ -353,18 +370,34 @@ html, body {
  *
  * THE LOOK: chunky extruded blocks, in the same idiom as the 320x240 posterise pass the world is
  * rendered through. Everything here is deliberately hard-edged — integer offsets, no blur radius
- * anywhere, hard-stop gradients instead of blends, octagons instead of circles. A smoothly
- * shaded control layer would be the only anti-aliased thing on the screen and would read as
- * pasted on top of the game rather than part of it.
+ * anywhere, no smooth curves. A smoothly shaded control layer would be the only anti-aliased thing
+ * on the screen and would read as pasted on top of the game rather than part of it.
+ *
+ * The gameplay controls get there by being actual pixel art (see sprites.js) — they used to be
+ * drawn here out of gradients and box-shadows, faking the same extrusion. The meta buttons along
+ * the top edge still are, because they have no design yet; when they get one, the last of the
+ * hand-faked extrusion goes with them.
  */
 
 :root {
-  --tface:  #1d5c78;      /* button top face */
+  /* the CSS-faked extrusion, now only used by the meta buttons */
   --tside:  #0b2c3e;      /* the extruded side, i.e. how "tall" a block looks */
   --tedge:  #06121d;      /* hard outline */
-  --tlit:   rgba(255, 255, 255, .26);
-  --tshade: rgba(0, 0, 0, .40);
-  --tdepth: 6px;          /* extrusion depth. Pressing a block travels exactly this far. */
+
+  /*
+   * THE BLOCK SCALE, for the sprite controls. Every one of them is sized as a whole number of art
+   * blocks times one of these, and both MUST stay an integer number of CSS pixels: at 5.5px a
+   * 13-block sprite renders with some blocks 5px wide and others 6, which on pixel art reads
+   * instantly as a limp.
+   *
+   * Two scales because the art has two — compress and the turn stick are drawn ~1.4x the size of
+   * pump, brake and board position, because they are what you reach for constantly. These values
+   * put every control within a pixel or two of its proportion in the Figma mock on a ~390px-tall
+   * landscape phone; the media queries at the bottom step them for other screens.
+   */
+  --blk:  5px;                     /* pump, brake, board position */
+  --blkc: 7px;                     /* compress, turn stick */
+  --edge: calc(10 * var(--blk));   /* inset from the screen edge, matched left and right */
 }
 
 #touch { display: none; }
@@ -393,6 +426,7 @@ html, body {
 
 #touch.on .tstick,
 #touch.on .tpad,
+#touch.on .tzone,
 #touch.on .tmbtn {
   pointer-events: auto;
   /* stop the browser claiming the gesture for scroll, pull-to-refresh or double-tap zoom */
@@ -412,122 +446,153 @@ html, body {
   image-rendering: pixelated;
 }
 
-/* ---- thumbsticks ---- */
-
-/* fixed, not absolute: the container is a 0x0 anchor, so these lay out against the viewport */
-.tstick {
-  position: fixed;
-  bottom: env(safe-area-inset-bottom, 0px);
-  width: 128px;
-  height: 128px;
-  margin: 14px;
-  /* an octagon reads as a pixel-art circle; border-radius would give a smooth one */
-  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
-  background:
-    linear-gradient(180deg, rgba(13, 47, 66, .80) 0 62%, rgba(7, 26, 38, .80) 62% 100%);
-  box-shadow: inset 4px 4px 0 var(--tlit), inset -4px -4px 0 var(--tshade);
-}
-.tstick.tturn { left: env(safe-area-inset-left, 0px); }
-.tstick.twalk { right: env(safe-area-inset-right, 0px); }
-
-/* the axis each stick actually reads, drawn so you can see it is one-dimensional */
-.ttrack {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  background: rgba(111, 240, 200, .17);
-  transform: translate(-50%, -50%);
-}
-.ttrack.h { width: 76%; height: 4px; }
-.ttrack.v { width: 4px; height: 76%; }
-
-.tknob {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 56px;
-  height: 56px;
-  margin: -28px 0 0 -28px;
-  clip-path: polygon(30% 0, 70% 0, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0 70%, 0 30%);
-  /* hard stop, not a blend: the "lit top / dark bottom" of an extruded cap */
-  background: linear-gradient(180deg, #6ff0c8 0 60%, #2b9a79 60% 100%);
-  box-shadow: inset 4px 4px 0 rgba(255, 255, 255, .34), inset -4px -4px 0 rgba(0, 0, 0, .30);
-  /* no transition: the knob must track the thumb exactly, or the stick feels like syrup */
-}
-.tstick.down .tknob { background: linear-gradient(180deg, #b6ffe8 0 60%, #3fb894 60% 100%); }
-
-.tstick u {
-  position: absolute;
-  bottom: 12px;
-  left: 0;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  text-decoration: none;
-  color: rgba(150, 200, 224, .75);
-  pointer-events: none;
-}
-.tstick u .ico { width: 18px; height: 18px; }
-.tstick u span { font-size: 8px; letter-spacing: 2px; }
-
-/* ---- action buttons ---- */
-
-.tbuttons {
-  position: fixed;
-  right: calc(156px + env(safe-area-inset-right, 0px));
-  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
-  display: grid;
-  gap: 10px;
-  justify-items: stretch;
-}
-
-/*
- * An extruded block. The stack is: hard outline, then a solid unblurred offset for the side wall,
- * then two insets for the lit top edge and shaded bottom edge. Pressing it translates by exactly
- * the extrusion depth and drops the side wall to zero, so the block visibly sinks flush.
+/* ---- the sprite controls ----
+ *
+ * Each gameplay control is ONE element wearing a pixel-art PNG. sprites.js rasterises the art at a
+ * single pixel per block and CSS blows it back up, which is why two properties do most of the work:
+ *
+ *   image-rendering: pixelated   nearest-neighbour, so a 13px-wide sprite drawn at 91px stays
+ *                                hard-edged instead of turning to soup. Everything behind this
+ *                                layer goes through a 320x240 posterise pass — a smoothly resampled
+ *                                control would be the only soft thing on the screen.
+ *   background-position: bottom  a PRESSED sprite is one block SHORTER than its resting state,
+ *                                because the extruded skirt collapses when the block goes in.
+ *                                Anchored to the bottom, that missing block comes off the TOP and
+ *                                the button visibly sinks. Anchor it anywhere else and it reads as
+ *                                the ground rising instead.
+ *
+ * Boxes are quoted in art blocks — --w / --h come from the sprite table via touch.js — times the
+ * scale the control belongs to (--u). Nothing here hard-codes a pixel size.
  */
-.tpad {
-  position: relative;
-  font: inherit;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 2px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  color: #d3f4e8;
-  background: linear-gradient(180deg, #23708f 0 58%, var(--tface) 58% 100%);
+
+.tpad,
+.tpill {
+  position: absolute;
   border: 0;
-  border-radius: 0;
-  padding: 0 12px;
-  min-width: 84px;
-  height: 62px;
+  padding: 0;
+  background-color: transparent;
+  background-repeat: no-repeat;
+  background-position: bottom center;
+  background-image: var(--spr);
+  image-rendering: pixelated;
+  width: calc(var(--w) * var(--u));
+  height: calc(var(--h) * var(--u));
+  background-size: 100% calc(var(--h) * var(--u));
   cursor: pointer;
-  box-shadow:
-    inset 4px 4px 0 var(--tlit),
-    inset -4px -4px 0 var(--tshade),
-    0 var(--tdepth) 0 var(--tside),
-    0 var(--tdepth) 0 3px var(--tedge),
-    0 0 0 3px var(--tedge);
   transition: none;
 }
-.tpad span { pointer-events: none; }
+
+/* ---- action buttons: pump, compress, brake ---- */
+
+.tpad { --u: var(--blk); }
+.tpad.comp { --u: var(--blkc); }   /* the one you hit most, so the one drawn biggest */
 
 /* :active is unreliable while a pointer is captured, so touch.js drives .down instead */
 .tpad.down {
-  transform: translateY(var(--tdepth));
-  background: linear-gradient(180deg, #8ff8d8 0 58%, #4ed3ab 58% 100%);
-  color: #04231a;
-  box-shadow:
-    inset 4px 4px 0 rgba(255, 255, 255, .30),
-    inset -4px -4px 0 rgba(0, 0, 0, .22),
-    0 0 0 var(--tside),
-    0 0 0 3px var(--tedge);
+  background-image: var(--sprDown);
+  background-size: 100% calc(var(--hd) * var(--u));
 }
+
+/* ---- board position: one pill, two independently held halves ---- */
+
+.tpill { --u: var(--blk); }
+.tpill.nose {
+  background-image: var(--sprUp);
+  background-size: 100% calc(var(--hu) * var(--u));
+}
+.tpill.tail {
+  background-image: var(--sprDn);
+  background-size: 100% calc(var(--hd) * var(--u));
+}
+
+/* Invisible hit zones laid over the drawn halves — the sprite carries the entire look, so these
+   only exist to catch the thumb. Split on the art's own divider row, not down the middle: the
+   lower half carries the skirt and is two blocks taller than the upper one. */
+.tzone {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.tzone.up { top: 0; height: calc(var(--split) * var(--u)); }
+.tzone.dn { top: calc(var(--split) * var(--u)); bottom: 0; }
+
+/* ---- turn stick: a thumb riding over a hole ---- */
+
+.tstick {
+  --u: var(--blkc);
+  position: fixed;
+  /* wide enough for the thumb at full lock either way, so the puck never clips */
+  width: calc((var(--tw) + 2 * var(--travel)) * var(--u));
+  /* a block of slack top and bottom: the art is only 13 blocks tall but a stick wants a hit area
+     you can land on without aiming */
+  height: calc((var(--th) + 2) * var(--u));
+}
+
+.thole,
+.tthumb {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  background-image: var(--spr);
+  image-rendering: pixelated;
+}
+
+.thole {
+  width: calc(var(--hw) * var(--u));
+  height: calc(var(--hh) * var(--u));
+  transform: translate(-50%, -50%);
+}
+
+/*
+ * The thumb is two blocks WIDER than the hole, so at rest it covers the socket completely and the
+ * control reads as one solid puck; sliding it is what reveals the well behind. --tx is a whole
+ * number of blocks, written by touch.js from the dead-zoned axis.
+ *
+ * No transition, deliberately: the puck must track the finger exactly or the stick feels like syrup.
+ */
+.tthumb {
+  width: calc(var(--tw) * var(--u));
+  height: calc(var(--th) * var(--u));
+  transform: translate(calc(-50% + var(--tx, 0) * var(--u)), -50%);
+}
+
+/* ---- where it all sits ----
+ *
+ * Landscape is the Figma mock read straight off: stick hard left, action cluster hard right, both
+ * on the vertical centreline and both the same inset from their own screen edge.
+ */
+
+.tstick {
+  left: calc(var(--edge) - var(--travel) * var(--u) + env(safe-area-inset-left, 0px));
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/*
+ * The cluster is a ZERO-SIZED anchor pinned exactly on the compress button's centre, and every
+ * control in it is placed as an offset from that centre measured in art blocks. That is the whole
+ * trick: re-anchoring the cluster moves the entire diamond without disturbing a single internal
+ * gap, which is exactly what portrait asks for.
+ */
+.tcluster {
+  position: fixed;
+  width: 0;
+  height: 0;
+  right: calc(var(--edge) + 6.5 * var(--blkc) + env(safe-area-inset-right, 0px));
+  top: 50%;
+}
+.tcluster > * { left: 0; top: 0; }
+
+.tpad.comp  { transform: translate(-50%, -50%); }
+.tpad.pump  { transform: translate(calc(-50% - 9 * var(--blk)), calc(-50% - 22 * var(--blk))); }
+.tpad.brake { transform: translate(calc(-50% - 9 * var(--blk)), calc(-50% + 22 * var(--blk))); }
+.tpill      { transform: translate(calc(-50% - 26 * var(--blk)), -50%); }
 
 /* ---- meta buttons: camera, mute, pause ---- */
 
@@ -585,23 +650,79 @@ html, body {
  * and the pocket meter is centred at 62vw — which flanks the sticks happily in landscape but
  * runs straight through them in portrait.
  */
-/* both top corners now carry buttons, so the speed and score panels move down out from under them */
-body.is-touch .tl,
-body.is-touch .tr { top: 64px; }
+/* Both top corners now carry buttons, so row 1 moves down out from under them. Setting --hudtop
+   rather than `top` on each panel means row 2 (the callout) follows it down automatically. */
+body.is-touch { --hudtop: 64px; }
 body.is-touch .bottom { bottom: 158px; width: min(520px, 76vw); }
 
-/* Short landscape — a phone on its side has very little height to give away. */
-@media (orientation: landscape) and (max-height: 460px) {
-  .tstick { width: 106px; height: 106px; margin: 10px; }
-  .tknob { width: 46px; height: 46px; margin: -23px 0 0 -23px; }
-  .tstick u { bottom: 8px; }
-  .tbuttons { right: calc(128px + env(safe-area-inset-right, 0px)); gap: 7px; }
-  .tpad { height: 50px; min-width: 74px; font-size: 8px; }
-  .tpad .ico { width: 18px; height: 18px; }
-  .tmbtn { width: 34px; height: 34px; }
-  body.is-touch .tl { top: 18px; left: 62px; }
-  body.is-touch .tr { top: 18px; right: 140px; }
+/*
+ * In landscape the controls sit on the vertical centreline, so the pocket meter can hug the bottom
+ * edge and pass safely underneath the whole cluster. This is why the meter does not need to dodge
+ * sideways any more the way it did when the buttons were a stack at the bottom right.
+ */
+@media (orientation: landscape) {
   body.is-touch .bottom { bottom: 22px; width: min(420px, 44vw); }
+}
+
+/* Short landscape — a phone on its side has very little height to give away. The control sizes are
+   already tuned for this case; it is the HUD around them that has to move. */
+@media (orientation: landscape) and (max-height: 460px) {
+  .tmbtn { width: 34px; height: 34px; }
+  /* here the meta buttons sit BESIDE the panels rather than above them, so row 1 comes back up and
+     the panels just move inboard to clear them */
+  body.is-touch { --hudtop: 18px; }
+  body.is-touch .tl { left: 62px; }
+  body.is-touch .tr { right: 140px; }
+}
+
+/* A tablet on its side has the height to carry the art at full size. */
+@media (orientation: landscape) and (min-height: 540px) {
+  :root { --blk: 7px; --blkc: 10px; }
+}
+
+/*
+ * PORTRAIT. Two columns with the space in the middle — the stick owns the left edge, the diamond
+ * owns the right, and both sit the SAME --edge in from their own side. That makes the horizontal
+ * anchor the identical expression landscape uses, so portrait now differs in only two ways: the
+ * block scale, and the fact that the whole control layer drops to the bottom of the screen.
+ *
+ * Every gap inside the diamond is untouched, which is the point of anchoring the cluster on the
+ * compress centre — the diamond moves as one piece and never reflows internally.
+ */
+@media (orientation: portrait) {
+  :root {
+    --blk: 4px;
+    --blkc: 6px;
+    /*
+     * What the pocket meter and stance bar keep for themselves along the very bottom: roughly 70px
+     * of panel, the inset under it, and a gap so the controls are not sitting on top of the
+     * readouts. The controls stack ABOVE this strip.
+     */
+    --hudstrip: calc(104px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .tcluster {
+    top: auto;
+    bottom: calc(var(--hudstrip) + 29.5 * var(--blk));
+  }
+
+  /* same centreline as the cluster, so the two hands sit level */
+  .tstick {
+    top: auto;
+    transform: none;
+    bottom: calc(var(--hudstrip) + 29.5 * var(--blk) - 7.5 * var(--blkc));
+  }
+
+  /* the readouts keep the bottom of the screen, with the controls clear above them */
+  body.is-touch .bottom {
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    width: min(520px, 76vw);
+  }
+}
+
+/* 320px wide is still a real phone, and at the sizes above the cluster would run off the edge. */
+@media (orientation: portrait) and (max-width: 359px) {
+  :root { --blk: 3px; --blkc: 5px; }
 }
 
 /* ------------------------------------------------------------ overlay */
@@ -661,7 +782,14 @@ body.is-touch .bottom { bottom: 158px; width: min(520px, 76vw); }
 }
 .tip b { color: var(--ink); }
 
-button {
+/*
+ * DROP IN / RIDE AGAIN. Scoped to the id rather than styling bare `button`, which is what this
+ * used to do — and which leaked straight onto the touch controls once they became <button>s: the
+ * mint fill landed on a sprite pad, `box-shadow: 0 4px 0` drew a green bar under every control,
+ * and `button:hover` (0,1,1) outranked `.tpad` (0,1,0) so a tapped pad went solid mint and stayed
+ * there, because a touchscreen has no way to leave :hover.
+ */
+#go {
   font: inherit;
   font-size: 15px;
   letter-spacing: 5px;
@@ -673,8 +801,8 @@ button {
   cursor: pointer;
   box-shadow: 0 4px 0 #23a37c;
 }
-button:hover { background: #8ff8d8; }
-button:active { transform: translateY(3px); box-shadow: 0 1px 0 #23a37c; }
+#go:hover { background: #8ff8d8; }
+#go:active { transform: translateY(3px); box-shadow: 0 1px 0 #23a37c; }
 
 .foot { margin: 18px 0 0; font-size: 10px; letter-spacing: 3px; color: #567c94; }
 
@@ -687,7 +815,7 @@ button:active { transform: translateY(3px); box-shadow: 0 1px 0 #23a37c; }
   .keys { gap: 9px; margin: 18px 0 16px; }
   .keys b { flex-basis: 76px; }
   .keys div, .keys span { font-size: 11px; }
-  button { padding: 14px 24px; letter-spacing: 4px; }
+  #go { padding: 14px 24px; letter-spacing: 4px; }
   .foot { margin-top: 14px; letter-spacing: 2px; }
 }
 
